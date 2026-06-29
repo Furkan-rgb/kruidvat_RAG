@@ -7,6 +7,9 @@ table, and (by default) hands those products to a local LLM as grounding, so
 the answer comes from real, current ingredient data instead of the model's
 memory.
 
+Defaults (database, models, top-k) live in config.py; the CLI flags below
+override them per run.
+
 Examples:
     # Ground a local LLM and get an answer
     python query.py "Which hairsprays are alcohol-free?"
@@ -29,15 +32,7 @@ from urllib import request as urllib_request
 import sqlite_vec
 from sqlite_vec import serialize_float32
 
-# --- defaults (override via CLI) ---------------------------------------------
-DB_DEFAULT = "kruidvat.db"
-EMBED_URL = "http://localhost:11434/api/embeddings"
-GENERATE_URL = "http://localhost:11434/api/generate"
-EMBED_MODEL = "nomic-embed-text"     # must match the model used in embed.py
-ANSWER_MODEL = "ministral-3:3b"      # writes the final grounded answer
-TOP_K = 5
-OLLAMA_TIMEOUT = 60.0
-# -----------------------------------------------------------------------------
+import config
 
 ANSWER_SYSTEM_PROMPT = """You answer questions about cosmetic products using ONLY the product data provided in the context.
 
@@ -134,26 +129,28 @@ def main():
     parser.add_argument(
         "question", help="Your question (or search text when using --search)"
     )
-    parser.add_argument("--db", default=DB_DEFAULT, help="SQLite database to query")
+    parser.add_argument("--db", default=config.DB_PATH, help="SQLite database to query")
     parser.add_argument(
         "--search",
         action="store_true",
         help="Only retrieve and print the nearest products (skip the LLM answer)",
     )
     parser.add_argument(
-        "--top-k", type=int, default=TOP_K, help="Number of products to retrieve"
+        "--top-k", type=int, default=config.TOP_K, help="Number of products to retrieve"
     )
     parser.add_argument(
         "--embed-model",
-        default=EMBED_MODEL,
+        default=config.EMBED_MODEL,
         help="Embedding model (must match embed.py)",
     )
     parser.add_argument(
-        "--answer-model", default=ANSWER_MODEL, help="Model used to write the answer"
+        "--answer-model",
+        default=config.ANSWER_MODEL,
+        help="Model used to write the answer",
     )
-    parser.add_argument("--embed-url", default=EMBED_URL)
-    parser.add_argument("--generate-url", default=GENERATE_URL)
-    parser.add_argument("--ollama-timeout", type=float, default=OLLAMA_TIMEOUT)
+    parser.add_argument("--embed-url", default=config.EMBEDDINGS_URL)
+    parser.add_argument("--generate-url", default=config.GENERATE_URL)
+    parser.add_argument("--ollama-timeout", type=float, default=config.OLLAMA_TIMEOUT)
     args = parser.parse_args()
 
     conn = sqlite3.connect(args.db)
