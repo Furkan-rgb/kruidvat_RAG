@@ -19,6 +19,7 @@ This project builds that grounding layer: scraping Kruidvat's current EU catalog
 - **Local LLM extraction via Ollama**: each product page's sanitized text is sent to a local [Ollama](https://ollama.com) model over its HTTP API (`/api/generate`) with a schema-constrained, INCI-focused prompt (`{"found": bool, "ingredients": [...]}`), `temperature: 0`, and `format: json`. Calls run off the event loop and are serialized through a single-flight semaphore. No cloud APIs or keys; everything runs on your machine.
 - **Semantic embeddings**: a second pass embeds each product locally with [`nomic-embed-text`](https://ollama.com/library/nomic-embed-text) and stores the vectors in the same SQLite file via [sqlite-vec](https://github.com/asg017/sqlite-vec), making the catalogue searchable by meaning.
 - **Grounded Q&A**: `query.py` embeds your question, retrieves the closest products, and feeds them to a local LLM as context, so answers come from real catalogue data instead of the model's memory.
+- **One place to configure**: `config.py` holds the shared defaults (database path, model names, Ollama host, and the list of categories to scrape); every script accepts CLI flags that override them per run.
 - **Smart pagination**: reads the total product count from the category page and computes exactly how many pages to crawl, with empty-page short-circuiting.
 - **Idempotent storage**: SQLite (WAL mode) with batched inserts, URL de-duplication, and skip-already-scraped logic so runs can be resumed. Embedding is incremental too, so re-runs only process new products.
 
@@ -28,6 +29,7 @@ The code is split into focused, independently testable modules:
 
 | File | Responsibility |
 |------|----------------|
+| `config.py` | Shared defaults: database path, model names, Ollama host, category list |
 | `scraper.py` | CLI entry point and orchestration (crawl → extract → store) |
 | `browser.py` | Playwright context/stealth setup, navigation, link & name extraction |
 | `pager.py` | Category pagination and product-link collection |
@@ -57,11 +59,23 @@ ollama pull nomic-embed-text    # semantic embeddings
 ollama serve   # if not already running (default: http://localhost:11434)
 ```
 
+## Configuration
+
+Shared defaults live in `config.py`: the database path, model names, the Ollama host, and the `CATEGORIES` list that `scraper.py` crawls by default. Edit that file to change them globally, or pass the matching CLI flag to override a single run.
+
 ## Usage
 
-The full pipeline is three steps: scrape, embed, then query. `start.sh` runs the first two for a couple of categories.
+The full pipeline is three steps: scrape, embed, then query.
 
 ### 1. Scrape
+
+With no arguments, this scrapes every category in `config.CATEGORIES`:
+
+```bash
+python scraper.py
+```
+
+Override the targets with one or more `--category` flags (repeatable):
 
 ```bash
 python scraper.py \
@@ -73,13 +87,15 @@ Useful options:
 
 | Flag | Default | Description |
 |------|---------|-------------|
+| `--category URL` | `config.CATEGORIES` | Category URL to scrape (repeatable) |
+| `--db` | `config.DB_PATH` (`kruidvat.db`) | Output SQLite database |
 | `--headed` | off | Show the browser window (debugging) |
 | `--concurrency N` | 10 | Concurrent product pages |
 | `--max-pages N` | 200 | Cap on category pages crawled |
-| `--limit N` | none | Process at most N products |
+| `--limit N` | none | Process at most N products per category |
 | `--delay S` | 0.2 | Delay between paginated requests |
-| `--ollama-model` | `ministral-3:3b` | Local Ollama model used for extraction |
-| `--ollama-url` | `http://localhost:11434/api/generate` | Ollama generate endpoint |
+| `--ollama-model` | `config.EXTRACT_MODEL` | Local Ollama model used for extraction |
+| `--ollama-url` | `config.GENERATE_URL` | Ollama generate endpoint |
 | `--ollama-timeout` | `60` | LLM request timeout (seconds) |
 
 ### 2. Embed for semantic search
@@ -94,10 +110,10 @@ This reads products that have ingredients, embeds `name + ingredients` with a lo
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--db` | `kruidvat.db` | SQLite database written by `scraper.py` |
-| `--embed-model` | `nomic-embed-text` | Local Ollama embedding model |
-| `--embed-dim` | `768` | Embedding size (must match the model's output) |
-| `--ollama-url` | `http://localhost:11434/api/embeddings` | Ollama embeddings endpoint |
+| `--db` | `config.DB_PATH` (`kruidvat.db`) | SQLite database written by `scraper.py` |
+| `--embed-model` | `config.EMBED_MODEL` (`nomic-embed-text`) | Local Ollama embedding model |
+| `--embed-dim` | `config.EMBED_DIM` (`768`) | Embedding size (must match the model's output) |
+| `--ollama-url` | `config.EMBEDDINGS_URL` | Ollama embeddings endpoint |
 | `--ollama-timeout` | `60` | Embedding request timeout (seconds) |
 
 ### 3. Ask questions (RAG)
@@ -114,11 +130,11 @@ python query.py --search "contains Linalool"
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--db` | `kruidvat.db` | SQLite database to query |
+| `--db` | `config.DB_PATH` (`kruidvat.db`) | SQLite database to query |
 | `--search` | off | Only print retrieved products, skip the LLM answer |
-| `--top-k N` | 5 | Number of products to retrieve |
-| `--answer-model` | `ministral-3:3b` | Local Ollama model used to write the answer |
-| `--embed-model` | `nomic-embed-text` | Embedding model (must match `embed.py`) |
+| `--top-k N` | `config.TOP_K` (`5`) | Number of products to retrieve |
+| `--answer-model` | `config.ANSWER_MODEL` (`ministral-3:3b`) | Local Ollama model used to write the answer |
+| `--embed-model` | `config.EMBED_MODEL` (`nomic-embed-text`) | Embedding model (must match `embed.py`) |
 | `--ollama-timeout` | `60` | Request timeout (seconds) |
 
 ## Data model
@@ -152,7 +168,7 @@ Each row is self-contained and easy to export to JSONL for embedding, one record
   - `mxbai-embed-large` (1024-dim; higher general English scores, but heavier)
   - `all-minilm` (tiny and fast; useful as a cheap baseline)
 
-  Both `embed.py` and `query.py` already take `--embed-model` / `--embed-dim`, so swapping models is just a flag plus a re-embed. Pick a set of representative questions, measure retrieval quality (and answer quality) per model, and record the results here.
+  Both `embed.py` and `query.py` already take `--embed-model` / `--embed-dim` (or set `EMBED_MODEL` / `EMBED_DIM` in `config.py`), so swapping models is just a flag plus a re-embed. Pick a set of representative questions, measure retrieval quality (and answer quality) per model, and record the results here.
 - **Set up an evaluation harness** so the comparison above is repeatable rather than eyeballed.
 
 ## Notes
