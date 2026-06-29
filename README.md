@@ -1,6 +1,6 @@
 # Kruidvat Ingredient Scraper
 
-A web scraping pipeline that crawls product pages from [Kruidvat](https://www.kruidvat.nl) and extracts clean, structured cosmetic ingredient data (INCI) into a local SQLite database, ready to be embedded for RAG / semantic search.
+A web scraping pipeline that crawls product pages from [Kruidvat](https://www.kruidvat.nl) and extracts clean, structured cosmetic ingredient data (INCI) into a local SQLite database, then embeds it for RAG / semantic search.
 
 The interesting part isn't the crawling; it's getting *reliable structured data* out of messy, inconsistent webshop HTML. Instead of brittle CSS-selector parsing, a local LLM reads the sanitized page text and returns a validated ingredient list, while distinguishing real cosmetics from hardware (hair dryers, brushes, etc.) that have no ingredients at all.
 
@@ -17,8 +17,9 @@ This project builds that grounding layer: scraping Kruidvat's current EU catalog
 - **Async + concurrent**: built on `asyncio` and Playwright; product pages are scraped in parallel with a bounded semaphore.
 - **Anti-bot hardening**: uses [`playwright-stealth`](https://pypi.org/project/playwright-stealth/) to patch the automation fingerprint, plus a realistic Chromium profile (nl-NL locale, Europe/Amsterdam timezone, custom user-agent/headers, `--disable-blink-features=AutomationControlled`) and automatic cookie/"read more" handling.
 - **Local LLM extraction via Ollama**: each product page's sanitized text is sent to a local [Ollama](https://ollama.com) model over its HTTP API (`/api/generate`) with a schema-constrained, INCI-focused prompt (`{"found": bool, "ingredients": [...]}`), `temperature: 0`, and `format: json`. Calls run off the event loop and are serialized through a single-flight semaphore. No cloud APIs or keys; everything runs on your machine.
+- **Semantic embeddings**: a second pass embeds each product locally with [`nomic-embed-text`](https://ollama.com/library/nomic-embed-text) and stores the vectors in the same SQLite file via [sqlite-vec](https://github.com/asg017/sqlite-vec), making the catalogue searchable by meaning.
 - **Smart pagination**: reads the total product count from the category page and computes exactly how many pages to crawl, with empty-page short-circuiting.
-- **Idempotent storage**: SQLite (WAL mode) with batched inserts, URL de-duplication, and skip-already-scraped logic so runs can be resumed.
+- **Idempotent storage**: SQLite (WAL mode) with batched inserts, URL de-duplication, and skip-already-scraped logic so runs can be resumed. Embedding is incremental too, so re-runs only process new products.
 
 ## Architecture
 
@@ -31,24 +32,26 @@ The code is split into focused, independently testable modules:
 | `pager.py` | Category pagination and product-link collection |
 | `extractor.py` | HTML sanitization + LLM ingredient extraction and response parsing |
 | `db.py` | SQLite schema and batched persistence |
+| `embed.py` | Embeds products into a `sqlite-vec` vector table for semantic search |
 | `logging_config.py` | Structured JSON logging |
 
-**Flow:** open category page → read total product count → paginate and collect `/p/` product links → filter out already-scraped URLs → concurrently visit each product, sanitize the HTML, and ask the local LLM for ingredients → batch-write results to SQLite.
+**Flow:** open category page → read total product count → paginate and collect `/p/` product links → filter out already-scraped URLs → concurrently visit each product, sanitize the HTML, and ask the local LLM for ingredients → batch-write results to SQLite → embed each product into a vector table for semantic search.
 
 ## Setup
 
-Requires Python 3.9+ and a running [Ollama](https://ollama.com) instance; the ingredient extraction step calls Ollama locally, so it must be installed and serving before you scrape.
+Requires Python 3.9+ and a running [Ollama](https://ollama.com) instance; both the ingredient extraction and the embedding step call Ollama locally, so it must be installed and serving before you run them.
 
 ```bash
 # 1. Create and activate a virtual environment
 python -m venv .venv && source .venv/bin/activate
 
-# 2. Install Python dependencies (includes playwright-stealth) + the browser
+# 2. Install Python dependencies (includes playwright-stealth and sqlite-vec) + the browser
 pip install -r requirements.txt
 python -m playwright install chromium
 
-# 3. Pull the extraction model and make sure Ollama is running
-ollama pull ministral-3:3b
+# 3. Pull the models and make sure Ollama is running
+ollama pull ministral-3:3b      # ingredient extraction
+ollama pull nomic-embed-text    # semantic embeddings
 ollama serve   # if not already running (default: http://localhost:11434)
 ```
 
@@ -73,6 +76,26 @@ Useful options:
 | `--ollama-url` | `http://localhost:11434/api/generate` | Ollama generate endpoint |
 | `--ollama-timeout` | `60` | LLM request timeout (seconds) |
 
+## Embedding for semantic search
+
+After scraping, build a vector for every product so the catalogue can be searched by meaning rather than exact keywords:
+
+```bash
+python embed.py --db kruidvat.db
+```
+
+This reads products that have ingredients, embeds `name + ingredients` with a local Ollama embedding model, and writes the vectors into a `vec_products` table inside the same SQLite file using [sqlite-vec](https://github.com/asg017/sqlite-vec). Re-running only embeds new products, so it is safe to run after each scrape.
+
+Useful options:
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--db` | `kruidvat.db` | SQLite database written by `scraper.py` |
+| `--embed-model` | `nomic-embed-text` | Local Ollama embedding model |
+| `--embed-dim` | `768` | Embedding size (must match the model's output) |
+| `--ollama-url` | `http://localhost:11434/api/embeddings` | Ollama embeddings endpoint |
+| `--ollama-timeout` | `60` | Embedding request timeout (seconds) |
+
 ## Data model
 
 ```sql
@@ -82,6 +105,15 @@ products(
   url             TEXT UNIQUE,
   ingredients_list TEXT,   -- JSON array of normalized ingredients
   scraped_at      TEXT     -- ISO 8601 UTC
+)
+```
+
+`embed.py` adds a companion virtual table in the same file:
+
+```sql
+vec_products USING vec0(
+  product_id  INTEGER PRIMARY KEY,  -- references products.id
+  embedding   FLOAT[768]            -- nomic-embed-text vector
 )
 ```
 
