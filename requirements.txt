@@ -1,3 +1,4 @@
 playwright>=1.40.0
+playwright-stealth
 beautifulsoup4
 tqdm

@@ -7,8 +7,8 @@ The interesting part isn't the crawling; it's getting *reliable structured data*
 ## Highlights
 
 - **Async + concurrent** — built on `asyncio` and Playwright; product pages are scraped in parallel with a bounded semaphore.
-- **Anti-bot hardening** — `playwright-stealth`, a realistic Chromium fingerprint (locale, timezone, headers, viewport), and automatic cookie/"read more" handling.
-- **LLM-based extraction** — a local [Ollama](https://ollama.com) model extracts ingredients from cleaned page text using a carefully engineered, schema-constrained prompt (`{"found": bool, "ingredients": [...]}`), serialized through a single-flight semaphore.
+- **Anti-bot hardening** — uses [`playwright-stealth`](https://pypi.org/project/playwright-stealth/) to patch the automation fingerprint, plus a realistic Chromium profile (nl-NL locale, Europe/Amsterdam timezone, custom user-agent/headers, `--disable-blink-features=AutomationControlled`) and automatic cookie/"read more" handling.
+- **Local LLM extraction via Ollama** — each product page's sanitized text is sent to a local [Ollama](https://ollama.com) model over its HTTP API (`/api/generate`) with a schema-constrained, INCI-focused prompt (`{"found": bool, "ingredients": [...]}`), `temperature: 0`, and `format: json`. Calls run off the event loop and are serialized through a single-flight semaphore. No cloud APIs or keys — everything runs on your machine.
 - **Smart pagination** — reads the total product count from the category page and computes exactly how many pages to crawl, with empty-page short-circuiting.
 - **Idempotent storage** — SQLite (WAL mode) with batched inserts, URL de-duplication, and skip-already-scraped logic so runs can be resumed.
 
@@ -29,19 +29,19 @@ The code is split into focused, independently testable modules:
 
 ## Setup
 
-Requires Python 3.9+ and a running [Ollama](https://ollama.com) instance for the extraction step.
+Requires Python 3.9+ and a running [Ollama](https://ollama.com) instance — the ingredient extraction step calls Ollama locally, so it must be installed and serving before you scrape.
 
 ```bash
 # 1. Create and activate a virtual environment
 python -m venv .venv && source .venv/bin/activate
 
-# 2. Install dependencies
+# 2. Install Python dependencies (includes playwright-stealth) + the browser
 pip install -r requirements.txt
-pip install playwright-stealth
 python -m playwright install chromium
 
-# 3. Pull the extraction model (default: ministral-3:3b)
+# 3. Pull the extraction model and make sure Ollama is running
 ollama pull ministral-3:3b
+ollama serve   # if not already running (default: http://localhost:11434)
 ```
 
 ## Usage
@@ -61,8 +61,9 @@ Useful options:
 | `--max-pages N` | 200 | Cap on category pages crawled |
 | `--limit N` | — | Process at most N products |
 | `--delay S` | 0.2 | Delay between paginated requests |
-| `--ollama-model` | `ministral-3:3b` | Local Ollama model |
-| `--ollama-url` | `localhost:11434` | Ollama generate endpoint |
+| `--ollama-model` | `ministral-3:3b` | Local Ollama model used for extraction |
+| `--ollama-url` | `http://localhost:11434/api/generate` | Ollama generate endpoint |
+| `--ollama-timeout` | `60` | LLM request timeout (seconds) |
 
 ## Data model
 
