@@ -4,6 +4,14 @@ A web scraping pipeline that crawls product pages from [Kruidvat](https://www.kr
 
 The interesting part isn't the crawling; it's getting *reliable structured data* out of messy, inconsistent webshop HTML. Instead of brittle CSS-selector parsing, a local LLM reads the sanitized page text and returns a validated ingredient list, while distinguishing real cosmetics from hardware (hair dryers, brushes, etc.) that have no ingredients at all.
 
+## Motivation
+
+I kept buying cosmetics with ingredients I wanted to avoid. When I asked general AI assistants (ChatGPT, Claude, Gemini) what was in a product, the answers weren't reliable: often based on outdated formulations, confusing the US and EU versions of the same product (which frequently differ), or simply hallucinating ingredients that weren't there.
+
+The problem isn't that the models are bad. A general model's memory is just the wrong place to look for specific, current, region-dependent facts. The fix is grounding: give the model the real, up-to-date ingredient data and let it answer from that instead of from memory.
+
+This project builds that grounding layer: scraping Kruidvat's current EU catalogue into a structured, queryable database of products and their actual ingredients, ready to ground an LLM for reliable, hallucination-free answers.
+
 ## Highlights
 
 - **Async + concurrent** — built on `asyncio` and Playwright; product pages are scraped in parallel with a bounded semaphore.
