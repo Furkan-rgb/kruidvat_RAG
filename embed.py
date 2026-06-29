@@ -9,6 +9,9 @@ extension. Once this has run, the catalogue can be searched semantically.
 Run it once after scraping. Re-running only embeds NEW products, so it's
 safe to run again after each scrape.
 
+Defaults (database, model, dimension) live in config.py; the CLI flags below
+override them per run.
+
 Setup (one time):
     pip install -r requirements.txt   # includes sqlite-vec
     ollama pull nomic-embed-text      # the embedding model
@@ -26,13 +29,7 @@ from urllib import request as urllib_request
 import sqlite_vec
 from sqlite_vec import serialize_float32
 
-# --- defaults (override via CLI) ---------------------------------------------
-DB_DEFAULT = "kruidvat.db"          # the database scraper.py writes to
-OLLAMA_URL = "http://localhost:11434/api/embeddings"
-EMBED_MODEL = "nomic-embed-text"    # 768-dim embeddings; good local default
-EMBED_DIM = 768                     # must match the model's output size
-OLLAMA_TIMEOUT = 60.0
-# -----------------------------------------------------------------------------
+import config
 
 
 def get_embedding(text, *, model, url, timeout):
@@ -78,21 +75,21 @@ def main():
         description="Embed scraped products into a sqlite-vec table for semantic search."
     )
     parser.add_argument(
-        "--db", default=DB_DEFAULT, help="SQLite database file written by scraper.py"
+        "--db", default=config.DB_PATH, help="SQLite database file written by scraper.py"
     )
     parser.add_argument(
-        "--embed-model", default=EMBED_MODEL, help="Local Ollama embedding model"
+        "--embed-model", default=config.EMBED_MODEL, help="Local Ollama embedding model"
     )
     parser.add_argument(
         "--embed-dim",
         type=int,
-        default=EMBED_DIM,
+        default=config.EMBED_DIM,
         help="Embedding size (must match the model's output)",
     )
     parser.add_argument(
-        "--ollama-url", default=OLLAMA_URL, help="Ollama embeddings endpoint"
+        "--ollama-url", default=config.EMBEDDINGS_URL, help="Ollama embeddings endpoint"
     )
-    parser.add_argument("--ollama-timeout", type=float, default=OLLAMA_TIMEOUT)
+    parser.add_argument("--ollama-timeout", type=float, default=config.OLLAMA_TIMEOUT)
     args = parser.parse_args()
 
     conn = sqlite3.connect(args.db)
