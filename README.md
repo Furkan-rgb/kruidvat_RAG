@@ -1,6 +1,6 @@
 # Kruidvat Ingredient Scraper
 
-A web scraping pipeline that crawls product pages from [Kruidvat](https://www.kruidvat.nl) and extracts clean, structured cosmetic ingredient data (INCI) into a local SQLite database — ready to be embedded for RAG / semantic search.
+A web scraping pipeline that crawls product pages from [Kruidvat](https://www.kruidvat.nl) and extracts clean, structured cosmetic ingredient data (INCI) into a local SQLite database, ready to be embedded for RAG / semantic search.
 
 The interesting part isn't the crawling; it's getting *reliable structured data* out of messy, inconsistent webshop HTML. Instead of brittle CSS-selector parsing, a local LLM reads the sanitized page text and returns a validated ingredient list, while distinguishing real cosmetics from hardware (hair dryers, brushes, etc.) that have no ingredients at all.
 
@@ -14,11 +14,11 @@ This project builds that grounding layer: scraping Kruidvat's current EU catalog
 
 ## Highlights
 
-- **Async + concurrent** — built on `asyncio` and Playwright; product pages are scraped in parallel with a bounded semaphore.
-- **Anti-bot hardening** — uses [`playwright-stealth`](https://pypi.org/project/playwright-stealth/) to patch the automation fingerprint, plus a realistic Chromium profile (nl-NL locale, Europe/Amsterdam timezone, custom user-agent/headers, `--disable-blink-features=AutomationControlled`) and automatic cookie/"read more" handling.
-- **Local LLM extraction via Ollama** — each product page's sanitized text is sent to a local [Ollama](https://ollama.com) model over its HTTP API (`/api/generate`) with a schema-constrained, INCI-focused prompt (`{"found": bool, "ingredients": [...]}`), `temperature: 0`, and `format: json`. Calls run off the event loop and are serialized through a single-flight semaphore. No cloud APIs or keys — everything runs on your machine.
-- **Smart pagination** — reads the total product count from the category page and computes exactly how many pages to crawl, with empty-page short-circuiting.
-- **Idempotent storage** — SQLite (WAL mode) with batched inserts, URL de-duplication, and skip-already-scraped logic so runs can be resumed.
+- **Async + concurrent**: built on `asyncio` and Playwright; product pages are scraped in parallel with a bounded semaphore.
+- **Anti-bot hardening**: uses [`playwright-stealth`](https://pypi.org/project/playwright-stealth/) to patch the automation fingerprint, plus a realistic Chromium profile (nl-NL locale, Europe/Amsterdam timezone, custom user-agent/headers, `--disable-blink-features=AutomationControlled`) and automatic cookie/"read more" handling.
+- **Local LLM extraction via Ollama**: each product page's sanitized text is sent to a local [Ollama](https://ollama.com) model over its HTTP API (`/api/generate`) with a schema-constrained, INCI-focused prompt (`{"found": bool, "ingredients": [...]}`), `temperature: 0`, and `format: json`. Calls run off the event loop and are serialized through a single-flight semaphore. No cloud APIs or keys; everything runs on your machine.
+- **Smart pagination**: reads the total product count from the category page and computes exactly how many pages to crawl, with empty-page short-circuiting.
+- **Idempotent storage**: SQLite (WAL mode) with batched inserts, URL de-duplication, and skip-already-scraped logic so runs can be resumed.
 
 ## Architecture
 
@@ -37,7 +37,7 @@ The code is split into focused, independently testable modules:
 
 ## Setup
 
-Requires Python 3.9+ and a running [Ollama](https://ollama.com) instance — the ingredient extraction step calls Ollama locally, so it must be installed and serving before you scrape.
+Requires Python 3.9+ and a running [Ollama](https://ollama.com) instance; the ingredient extraction step calls Ollama locally, so it must be installed and serving before you scrape.
 
 ```bash
 # 1. Create and activate a virtual environment
@@ -67,7 +67,7 @@ Useful options:
 | `--headed` | off | Show the browser window (debugging) |
 | `--concurrency N` | 10 | Concurrent product pages |
 | `--max-pages N` | 200 | Cap on category pages crawled |
-| `--limit N` | — | Process at most N products |
+| `--limit N` | none | Process at most N products |
 | `--delay S` | 0.2 | Delay between paginated requests |
 | `--ollama-model` | `ministral-3:3b` | Local Ollama model used for extraction |
 | `--ollama-url` | `http://localhost:11434/api/generate` | Ollama generate endpoint |
@@ -85,7 +85,7 @@ products(
 )
 ```
 
-Each row is self-contained and easy to export to JSONL for embedding — one record (or one ingredient chunk) per vector.
+Each row is self-contained and easy to export to JSONL for embedding, one record (or one ingredient chunk) per vector.
 
 ## Notes
 
