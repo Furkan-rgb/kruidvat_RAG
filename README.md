@@ -144,6 +144,17 @@ vec_products USING vec0(
 
 Each row is self-contained and easy to export to JSONL for embedding, one record (or one ingredient chunk) per vector.
 
+## To do
+
+- **Test and compare different embedding models.** `nomic-embed-text` is the current default mostly because it runs locally with a single `ollama pull` and has a good quality-to-size ratio; it was not chosen by benchmarking on this data. The catalogue is an unusual mix of Dutch marketing text and Latin INCI ingredient names, so the right embedder is an open question. Worth evaluating on real queries:
+  - `nomic-embed-text` (768-dim, current default)
+  - `bge-m3` and `multilingual-e5` (multilingual; likely stronger on the Dutch text)
+  - `mxbai-embed-large` (1024-dim; higher general English scores, but heavier)
+  - `all-minilm` (tiny and fast; useful as a cheap baseline)
+
+  Both `embed.py` and `query.py` already take `--embed-model` / `--embed-dim`, so swapping models is just a flag plus a re-embed. Pick a set of representative questions, measure retrieval quality (and answer quality) per model, and record the results here.
+- **Set up an evaluation harness** so the comparison above is repeatable rather than eyeballed.
+
 ## Notes
 
 This is a personal project built to explore robust, LLM-assisted data extraction from real-world e-commerce pages. Please scrape responsibly and in line with the target site's terms of service.
