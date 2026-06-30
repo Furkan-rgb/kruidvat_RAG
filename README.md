@@ -17,9 +17,9 @@ This project builds that grounding layer: scraping Kruidvat's current EU catalog
 - **Async + concurrent**: built on `asyncio` and Playwright; product pages are scraped in parallel with a bounded semaphore.
 - **Anti-bot hardening**: uses [`playwright-stealth`](https://pypi.org/project/playwright-stealth/) to patch the automation fingerprint, plus a realistic Chromium profile (nl-NL locale, Europe/Amsterdam timezone, custom user-agent/headers, `--disable-blink-features=AutomationControlled`) and automatic cookie/"read more" handling.
 - **Local LLM extraction via Ollama**: each product page's sanitized text is sent to a local [Ollama](https://ollama.com) model over its HTTP API (`/api/generate`) with a schema-constrained, INCI-focused prompt (`{"found": bool, "ingredients": [...]}`), `temperature: 0`, and `format: json`. Calls run off the event loop and are serialized through a single-flight semaphore. No cloud APIs or keys; everything runs on your machine.
-- **Semantic embeddings**: a second pass embeds each product locally with [`nomic-embed-text`](https://ollama.com/library/nomic-embed-text) and stores the vectors in the same SQLite file via [sqlite-vec](https://github.com/asg017/sqlite-vec), making the catalogue searchable by meaning.
-- **Grounded Q&A**: `query.py` embeds your question, retrieves the closest products, and feeds them to a local LLM as context, so answers come from real catalogue data instead of the model's memory.
-- **One place to configure**: `config.py` holds the shared defaults (database path, model names, Ollama host, and the list of categories to scrape); every script accepts CLI flags that override them per run.
+- **Multilingual semantic embeddings**: a second pass embeds each product locally with [`embeddinggemma`](https://ollama.com/library/embeddinggemma) (Google's multilingual embedding model, a good fit for the Dutch product text + Latin INCI names) and stores the vectors in the same SQLite file via [sqlite-vec](https://github.com/asg017/sqlite-vec), making the catalogue searchable by meaning.
+- **Grounded Q&A**: `query.py` embeds your question, retrieves the closest products, and feeds them to a local LLM (`gemma4`) as context, so answers come from real catalogue data instead of the model's memory.
+- **One place to configure**: `config.py` holds the shared defaults (database path, model names, prompt prefixes, Ollama host, and the list of categories to scrape); every script accepts CLI flags that override them per run.
 - **Pluggable answer model**: embedding and retrieval are always local, while the model that writes the final answer is selected by `ANSWER_PROVIDER` (local `ollama` today), so a more capable local model or a remote API can be swapped in later without touching retrieval.
 - **Smart pagination**: reads the total product count from the category page and computes exactly how many pages to crawl, with empty-page short-circuiting.
 - **Idempotent storage**: SQLite (WAL mode) with batched inserts, URL de-duplication, and skip-already-scraped logic so runs can be resumed. Embedding is incremental too, so re-runs only process new products.
@@ -30,7 +30,7 @@ The code is split into focused, independently testable modules:
 
 | File | Responsibility |
 |------|----------------|
-| `config.py` | Shared defaults: database path, model names, Ollama host, category list |
+| `config.py` | Shared defaults: database path, model names, prompt prefixes, Ollama host, category list |
 | `scraper.py` | CLI entry point and orchestration (crawl → extract → store) |
 | `browser.py` | Playwright context/stealth setup, navigation, link & name extraction |
 | `pager.py` | Category pagination and product-link collection |
@@ -55,8 +55,9 @@ pip install -r requirements.txt
 python -m playwright install chromium
 
 # 3. Pull the models and make sure Ollama is running
-ollama pull ministral-3:3b      # ingredient extraction + grounded answers
-ollama pull nomic-embed-text    # semantic embeddings
+ollama pull ministral-3:3b      # ingredient extraction (scraper)
+ollama pull embeddinggemma      # semantic embeddings (embed + query)
+ollama pull gemma4:e4b          # grounded answers (query)
 ollama serve   # if not already running (default: http://localhost:11434)
 ```
 
@@ -64,7 +65,10 @@ ollama serve   # if not already running (default: http://localhost:11434)
 
 Shared defaults live in `config.py`: the database path, model names, the Ollama host, and the `CATEGORIES` list that `scraper.py` crawls by default. Edit that file to change them globally, or pass the matching CLI flag to override a single run.
 
-The model that writes the final answer is selected by `ANSWER_PROVIDER`, which is `ollama` (local) for now. Embedding and retrieval are always local; a remote provider can be added later as a single branch in `query.py`'s `generate_answer()` without touching anything else.
+Two things worth knowing:
+
+- **Embedding prompt prefixes.** EmbeddingGemma embeds documents and queries with different task instructions, kept in `config.py` as `EMBED_DOC_PREFIX` / `EMBED_QUERY_PREFIX`. If you switch to a model with other conventions (e.g. `bge-m3` needs none), update or empty them there.
+- **Pluggable answer model.** The model that writes the final answer is selected by `ANSWER_PROVIDER`, which is `ollama` (local) for now. Embedding and retrieval are always local; a remote provider can be added later as a single branch in `query.py`'s `generate_answer()` without touching anything else.
 
 ## Usage
 
@@ -111,13 +115,16 @@ python embed.py --db kruidvat.db
 
 This reads products that have ingredients, embeds `name + ingredients` with a local Ollama embedding model, and writes the vectors into a `vec_products` table inside the same SQLite file using [sqlite-vec](https://github.com/asg017/sqlite-vec). Re-running only embeds new products, so it is safe to run after each scrape.
 
+**Changing the embedding model?** Re-run with `--reset`. The incremental skip can't tell the model changed, and vectors from different models are not comparable, so `--reset` drops and rebuilds the vector table first.
+
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--db` | `config.DB_PATH` (`kruidvat.db`) | SQLite database written by `scraper.py` |
-| `--embed-model` | `config.EMBED_MODEL` (`nomic-embed-text`) | Local Ollama embedding model |
+| `--embed-model` | `config.EMBED_MODEL` (`embeddinggemma`) | Local Ollama embedding model |
 | `--embed-dim` | `config.EMBED_DIM` (`768`) | Embedding size (must match the model's output) |
 | `--ollama-url` | `config.EMBEDDINGS_URL` | Ollama embeddings endpoint |
 | `--ollama-timeout` | `60` | Embedding request timeout (seconds) |
+| `--reset` | off | Drop and rebuild the vector table first (use when changing the embedding model) |
 
 ### 3. Ask questions (RAG)
 
@@ -137,8 +144,8 @@ python query.py --search "contains Linalool"
 | `--search` | off | Only print retrieved products, skip the LLM answer |
 | `--top-k N` | `config.TOP_K` (`5`) | Number of products to retrieve |
 | `--provider` | `config.ANSWER_PROVIDER` (`ollama`) | Backend that writes the answer (local for now) |
-| `--answer-model` | `config.ANSWER_MODEL` (`ministral-3:3b`) | Local Ollama model used to write the answer |
-| `--embed-model` | `config.EMBED_MODEL` (`nomic-embed-text`) | Embedding model (must match `embed.py`) |
+| `--answer-model` | `config.ANSWER_MODEL` (`gemma4:e4b`) | Local Ollama model used to write the answer |
+| `--embed-model` | `config.EMBED_MODEL` (`embeddinggemma`) | Embedding model (must match `embed.py`) |
 | `--ollama-timeout` | `60` | Request timeout (seconds) |
 
 ## Data model
@@ -158,7 +165,7 @@ products(
 ```sql
 vec_products USING vec0(
   product_id  INTEGER PRIMARY KEY,  -- references products.id
-  embedding   FLOAT[768]            -- nomic-embed-text vector
+  embedding   FLOAT[768]            -- embeddinggemma vector (768-dim)
 )
 ```
 
@@ -166,13 +173,13 @@ Each row is self-contained and easy to export to JSONL for embedding, one record
 
 ## To do
 
-- **Test and compare different embedding models.** `nomic-embed-text` is the current default mostly because it runs locally with a single `ollama pull` and has a good quality-to-size ratio; it was not chosen by benchmarking on this data. The catalogue is an unusual mix of Dutch marketing text and Latin INCI ingredient names, so the right embedder is an open question. Worth evaluating on real queries:
-  - `nomic-embed-text` (768-dim, current default)
-  - `bge-m3` and `multilingual-e5` (multilingual; likely stronger on the Dutch text)
-  - `mxbai-embed-large` (1024-dim; higher general English scores, but heavier)
-  - `all-minilm` (tiny and fast; useful as a cheap baseline)
+- **Test and compare different embedding models.** `embeddinggemma` is the current default: multilingual (a good fit for the Dutch text + Latin INCI names), pairs with the Gemma 4 answer model, and is a 768-dim drop-in. It's still worth benchmarking on real queries against:
+  - `embeddinggemma` (768-dim, current default)
+  - `bge-m3` (1024-dim; strongest multilingual retrieval, needs `EMBED_DIM = 1024` and a `--reset` re-embed)
+  - `qwen3-embedding:0.6b` (flexible dims; top sub-1GB multilingual)
+  - `nomic-embed-text` (English-focused baseline)
 
-  Both `embed.py` and `query.py` already take `--embed-model` / `--embed-dim` (or set `EMBED_MODEL` / `EMBED_DIM` in `config.py`), so swapping models is just a flag plus a re-embed. Pick a set of representative questions, measure retrieval quality (and answer quality) per model, and record the results here.
+  Both `embed.py` and `query.py` take `--embed-model` / `--embed-dim` (or set `EMBED_MODEL` / `EMBED_DIM` in `config.py`); remember the per-model prompt prefixes (`EMBED_DOC_PREFIX` / `EMBED_QUERY_PREFIX`) and re-embed with `--reset` when switching. Pick a set of representative questions, measure retrieval quality (and answer quality) per model, and record the results here.
 - **Set up an evaluation harness** so the comparison above is repeatable rather than eyeballed.
 - **Add a remote answer provider** (e.g. Anthropic / OpenAI) as a branch in `query.py`'s `generate_answer()`, selected via `ANSWER_PROVIDER`, with the API key read from the environment. Embedding and retrieval stay local.
 
