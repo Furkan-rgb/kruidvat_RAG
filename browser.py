@@ -3,6 +3,12 @@ from urllib.parse import urljoin
 
 from playwright_stealth import Stealth
 
+# After the 2026 site redesign the product grid is rendered client-side as
+# <a class="product-list-item__link" href=".../p/..."> inside
+# <div class="product-grid__products-list">. The grid only renders once the
+# OneTrust cookie banner has been accepted.
+PRODUCT_LINK_SELECTOR = "a.product-list-item__link[href*='/p/']"
+
 
 def normalize_url(base, href, strip_query=True):
     if not href:
@@ -13,7 +19,32 @@ def normalize_url(base, href, strip_query=True):
     return absolute.split("?")[0] if strip_query else absolute
 
 
-async def click_cookie_if_present(page):
+async def click_cookie_if_present(page, wait=True):
+    """Dismiss the cookie consent wall.
+
+    The site uses a OneTrust banner (#onetrust-accept-btn-handler) that gates
+    the product grid. On the first navigation of a context we wait for it to
+    attach; once accepted the consent cookie persists for the whole context, so
+    later calls (wait=False) just click it if it happens to be visible.
+    """
+    try:
+        ot = page.locator("#onetrust-accept-btn-handler")
+        if wait:
+            try:
+                await ot.wait_for(state="visible", timeout=8000)
+            except Exception:
+                pass
+        if await ot.count() > 0:
+            try:
+                await ot.first.click(timeout=3000)
+                await asyncio.sleep(0.3)
+                return
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # Fallback: generic accept buttons (older layout / other locales).
     try:
         locator = page.locator(
             'button:has-text("Akkoord"), button:has-text("Accepteer"), button:has-text("Accept")'
@@ -23,6 +54,15 @@ async def click_cookie_if_present(page):
             await asyncio.sleep(0.2)
     except Exception:
         pass
+
+
+async def wait_for_products(page, timeout=20000):
+    """Wait for the client-rendered product grid to populate. Returns bool."""
+    try:
+        await page.wait_for_selector(PRODUCT_LINK_SELECTOR, timeout=timeout)
+        return True
+    except Exception:
+        return False
 
 
 async def click_read_more(page):
@@ -42,14 +82,11 @@ async def click_read_more(page):
 
 
 async def extract_product_links(page, base_url):
+    """Collect product URLs from the rendered grid (post-redesign markup)."""
     links = set()
-    # Only consider anchors that are inside direct children of #productList
-    containers = await page.query_selector_all("#productList > *")
-    for c in containers:
+    anchors = await page.query_selector_all(PRODUCT_LINK_SELECTOR)
+    for a in anchors:
         try:
-            a = await c.query_selector("a[href*='/p/']")
-            if not a:
-                continue
             href = await a.get_attribute("href")
             if href:
                 u = normalize_url(base_url, href)
@@ -94,9 +131,13 @@ async def make_browser_context(playwright, headless=True, proxy_url=None):
         "--disable-infobars",
         "--window-size=1280,800",
     ]
+    # Chrome's "new" headless mode is far harder to bot-detect than Playwright's
+    # default headless (the site won't render its product grid for the latter),
+    # so for headless runs we launch with headless=False and force --headless=new.
+    # Passing headless=False (--headed) opens a real visible window.
     launch_kwargs = dict(
         headless=False,
-        args=browser_args + ["--headless=new"],
+        args=browser_args + (["--headless=new"] if headless else []),
         ignore_default_args=["--enable-automation"],
     )
     if proxy_url:
@@ -139,5 +180,5 @@ async def open_page_and_prep(context, url):
         raise
 
     await click_cookie_if_present(page)
-    await click_read_more(page)
+    await wait_for_products(page)
     return page

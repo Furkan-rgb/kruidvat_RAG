@@ -38,29 +38,17 @@ CREATE TABLE IF NOT EXISTS products (
 """
 
 
-# LLM extraction helpers moved to extractor.py
 from browser import (
-    normalize_url,
     make_browser_context,
-    open_page_and_prep,
     click_cookie_if_present,
     click_read_more,
-    extract_product_links,
     extract_name,
 )
 from extractor import (
-    OLLAMA_SYSTEM_PROMPT,
-    clean_ingredient,
-    split_ingredient_string,
-    parse_llm_ingredients_response,
     extract_ingredients_with_llm,
 )
 from pager import (
-    build_paginated_url,
-    get_total_products_from_text,
     extract_total_products_from_html,
-    fetch_total_products,
-    compute_pages_needed,
     collect_all_product_links,
 )
 from db import setup_db, save_products_batch, read_existing_urls
@@ -106,7 +94,24 @@ def compute_pages_needed(total_count, page_size=100):
 
 async def scrape_single_product(page, url, *, ollama_model, ollama_url, ollama_timeout):
     await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-    await click_cookie_if_present(page)
+    # Consent cookie is already set context-wide by the link-collection step.
+    await click_cookie_if_present(page, wait=False)
+
+    async def _has_title():
+        try:
+            await page.wait_for_selector("h1", timeout=10000)
+            return True
+        except Exception:
+            return False
+
+    # Product detail is SPA-rendered and sometimes blank on first paint; reload once.
+    if not await _has_title():
+        try:
+            await page.reload(wait_until="domcontentloaded", timeout=30000)
+        except Exception:
+            pass
+        await _has_title()
+
     await click_read_more(page)
     name = await extract_name(page)
 
@@ -133,55 +138,18 @@ async def scrape_category(context, conn, existing, args, category):
     `existing` is a set of already-seen URLs; it is updated in place so the
     same product is not scraped twice when it appears in multiple categories.
     """
-    page_size_local = 100
-
-    # 1) Open the category page and prepare it (cookies / read-more)
-    try:
-        init_page = await open_page_and_prep(context, category)
-    except Exception:
-        init_page = await context.new_page()
-        try:
-            await init_page.goto(
-                category, wait_until="domcontentloaded", timeout=30000
-            )
-            await click_cookie_if_present(init_page)
-            await click_read_more(init_page)
-        except Exception:
-            pass
-
-    # 2) Extract total number of products from the opened page
-    total = await fetch_total_products(init_page)
-
-    # close the initial page now that we have the total
-    try:
-        await init_page.close()
-    except Exception:
-        pass
-
-    # 3) Compute pagination based on total (pages of `page_size_local`)
-    if total:
-        pages_needed = compute_pages_needed(total, page_size_local)
-        max_pages_to_fetch = min(args.max_pages, pages_needed or args.max_pages)
-    else:
-        max_pages_to_fetch = args.max_pages
-
-    # small helper to run prep actions after each paged goto
-    async def prep_page_after_goto(page):
-        await click_cookie_if_present(page)
-        await click_read_more(page)
-
-    # 4) Collect product links by paginating the category
+    # 1) Collect product links via the category search API (the browser context
+    #    passes the bot check; the API returns reliable, paginated product URLs).
     links = await collect_all_product_links(
         context,
         category,
-        max_pages=max_pages_to_fetch,
-        page_size=page_size_local,
+        page_size=100,
+        max_pages=args.max_pages,
+        limit=args.limit,
         delay=args.delay,
-        open_page_and_prep=prep_page_after_goto,
-        extract_product_links=extract_product_links,
     )
 
-    # 5) Filter out already seen URLs and apply optional limit
+    # 2) Filter out already seen URLs and apply optional limit
     links = [u for u in links if u not in existing]
     if args.limit:
         links = links[: args.limit]
@@ -242,7 +210,10 @@ async def main_async():
     parser.add_argument("--max-pages", type=int, default=200)
     parser.add_argument("--delay", type=float, default=0.2)
     parser.add_argument(
-        "--limit", type=int, default=None, help="Process at most N products per category"
+        "--limit",
+        type=int,
+        default=None,
+        help="Process at most N products per category",
     )
     parser.add_argument("--proxy", default=None)
     parser.add_argument(
