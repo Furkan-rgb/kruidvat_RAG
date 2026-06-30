@@ -20,8 +20,8 @@ Examples:
 
 Setup:
     pip install -r requirements.txt   # includes sqlite-vec
-    ollama pull nomic-embed-text      # embeddings (same as embed.py)
-    ollama pull ministral-3:3b        # answer generation
+    ollama pull embeddinggemma        # embeddings (same as embed.py)
+    ollama pull gemma4:e4b            # answer generation
     # make sure `ollama serve` is running
 """
 
@@ -182,8 +182,10 @@ def main():
     sqlite_vec.load(conn)
     conn.enable_load_extension(False)
 
+    # Prefix with the model's query instruction (see config.EMBED_QUERY_PREFIX)
+    # so the question is embedded the way the documents were in embed.py.
     query_vector = get_embedding(
-        args.question,
+        config.EMBED_QUERY_PREFIX + args.question,
         model=args.embed_model,
         url=args.embed_url,
         timeout=args.ollama_timeout,
