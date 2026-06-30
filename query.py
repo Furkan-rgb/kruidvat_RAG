@@ -7,8 +7,9 @@ table, and (by default) hands those products to a local LLM as grounding, so
 the answer comes from real, current ingredient data instead of the model's
 memory.
 
-Defaults (database, models, top-k) live in config.py; the CLI flags below
-override them per run.
+Embedding and retrieval are always local. The final answer step is pluggable
+via ANSWER_PROVIDER in config.py (local "ollama" for now); a remote model can
+be added later as one extra branch in generate_answer().
 
 Examples:
     # Ground a local LLM and get an answer
@@ -104,13 +105,8 @@ def build_context(rows):
     return "\n\n".join(blocks)
 
 
-def generate_answer(question, context, *, model, url, timeout):
-    """Ask the local LLM to answer `question` grounded only on `context`."""
-    prompt = (
-        f"Context (retrieved products):\n{context}\n\n"
-        f"Question: {question}\n\n"
-        f"Answer using only the context above."
-    )
+def _answer_ollama(prompt, *, model, url, timeout):
+    """Local Ollama backend for the answer step."""
     payload = {
         "model": model,
         "stream": False,
@@ -120,6 +116,29 @@ def generate_answer(question, context, *, model, url, timeout):
         "prompt": prompt,
     }
     return _post_json(url, payload, timeout).get("response", "").strip()
+
+
+def generate_answer(question, context, *, provider, model, url, timeout):
+    """Write the final answer from the retrieved context.
+
+    Embedding and retrieval are always local; only this step's backend is
+    pluggable. To add a remote model later (e.g. "anthropic"), add a branch
+    below that reads its API key from the environment and calls the provider.
+    Nothing else in the pipeline needs to change.
+    """
+    prompt = (
+        f"Context (retrieved products):\n{context}\n\n"
+        f"Question: {question}\n\n"
+        f"Answer using only the context above."
+    )
+    if provider == "ollama":
+        return _answer_ollama(prompt, model=model, url=url, timeout=timeout)
+    # elif provider == "anthropic":
+    #     return _answer_anthropic(prompt, model=model, timeout=timeout)
+    raise ValueError(
+        f"Unknown answer provider {provider!r}. Implemented: 'ollama'. "
+        "Add a branch in generate_answer() to support a remote model."
+    )
 
 
 def main():
@@ -137,6 +156,11 @@ def main():
     )
     parser.add_argument(
         "--top-k", type=int, default=config.TOP_K, help="Number of products to retrieve"
+    )
+    parser.add_argument(
+        "--provider",
+        default=config.ANSWER_PROVIDER,
+        help="Backend that writes the answer (currently: ollama)",
     )
     parser.add_argument(
         "--embed-model",
@@ -180,6 +204,7 @@ def main():
         answer = generate_answer(
             args.question,
             context,
+            provider=args.provider,
             model=args.answer_model,
             url=args.generate_url,
             timeout=args.ollama_timeout,
