@@ -7,14 +7,16 @@ and store that vector in the SAME SQLite file using the sqlite-vec
 extension. Once this has run, the catalogue can be searched semantically.
 
 Run it once after scraping. Re-running only embeds NEW products, so it's
-safe to run again after each scrape.
+safe to run again after each scrape. When you CHANGE the embedding model,
+re-run with --reset: the incremental skip can't tell the model changed, and
+vectors from different models are not comparable.
 
-Defaults (database, model, dimension) live in config.py; the CLI flags below
-override them per run.
+Defaults (database, model, dimension, prompt prefixes) live in config.py; the
+CLI flags below override them per run.
 
 Setup (one time):
     pip install -r requirements.txt   # includes sqlite-vec
-    ollama pull nomic-embed-text      # the embedding model
+    ollama pull embeddinggemma        # the embedding model
     # make sure `ollama serve` is running
 
 Usage:
@@ -90,6 +92,12 @@ def main():
         "--ollama-url", default=config.EMBEDDINGS_URL, help="Ollama embeddings endpoint"
     )
     parser.add_argument("--ollama-timeout", type=float, default=config.OLLAMA_TIMEOUT)
+    parser.add_argument(
+        "--reset",
+        action="store_true",
+        help="Drop and rebuild the vector table before embedding "
+        "(use when changing the embedding model)",
+    )
     args = parser.parse_args()
 
     conn = sqlite3.connect(args.db)
@@ -98,6 +106,13 @@ def main():
     conn.enable_load_extension(True)
     sqlite_vec.load(conn)
     conn.enable_load_extension(False)
+
+    # Changing the embedding model invalidates every stored vector, so allow a
+    # clean rebuild. Without this, the incremental skip below would keep old
+    # vectors and mix them with ones from a different model.
+    if args.reset:
+        conn.execute("DROP TABLE IF EXISTS vec_products")
+        conn.commit()
 
     # a vector table keyed by the product id from the `products` table
     conn.execute(
@@ -126,7 +141,10 @@ def main():
 
     embedded = 0
     for i, (pid, name, ingredients_list) in enumerate(todo, start=1):
-        text = build_text(name or "", ingredients_to_text(ingredients_list))
+        # Prefix with the model's document instruction (see config.EMBED_DOC_PREFIX).
+        text = config.EMBED_DOC_PREFIX + build_text(
+            name or "", ingredients_to_text(ingredients_list)
+        )
         try:
             vector = get_embedding(
                 text,
