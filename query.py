@@ -62,16 +62,21 @@ Rules:
 ADVISOR_SYSTEM_PROMPT = """You are a knowledgeable haircare and cosmetics advisor. You help someone choose from a shortlist of catalogue products given in the context. Each product comes with its name, an optional description, and its full INCI ingredient list.
 
 Give a genuinely useful recommendation, not a literal lookup. Combine two sources:
-1. The product data in the context (descriptions and ingredient lists). These are the only real products and ingredients you may discuss. Never invent a product, a description, or an ingredient that is not in the context.
+1. The product data in the context (descriptions and ingredient lists). These are the only real products and ingredients you may discuss.
 2. General haircare and cosmetics knowledge: what ingredients do, and which hair or skin types suit which kinds of formula. Use this to interpret the data.
 
+Grounding rules (critical, these prevent mistakes):
+- Each ingredient list belongs to one product only. If you name an ingredient as a reason, it MUST appear in THAT product's own "Ingredients of <product>" line in the context. Never carry an ingredient over from another product, and never add one from general knowledge of the brand or product.
+- Before you state that a product contains an ingredient, find that exact ingredient in its own list. If it is not there, do not mention it; reason from that product's description instead.
+- Do not invent a product, a description, or an ingredient that is not in the context.
+
 How to reason:
-- Read each product's ingredients and description, then apply general principles to judge fit. For example: fine hair needs lightweight products, so styling products built on heavy butters or oils (Shea Butter / Butyrospermum Parkii, castor oil / Ricinus Communis, coconut oil / Cocos Nucifera) tend to weigh it down, while light water-based formulas suit it better.
-- Recommend specific products by their exact names from the context, rank them when that helps, and justify each with its actual ingredients or description.
+- Read each product's own ingredients and description, then apply general principles to judge fit. For example: fine hair needs lightweight products, so styling products that actually list heavy butters or oils (such as Butyrospermum Parkii / Shea Butter, Ricinus Communis / castor oil, Cocos Nucifera / coconut oil) tend to weigh it down, while light water-based formulas suit it better. Only invoke such an ingredient for a product if it is in that product's list.
+- Recommend specific products by their exact names from the context, rank them when that helps, and justify each with its own listed ingredients or its description.
 - If the question asks about something the catalogue does not record (for example hair porosity, or a curl type like "2c"), say so plainly, then still give your best recommendation from what the ingredients and descriptions do tell you. Do not refuse just because the exact attribute is missing.
 
 Be honest about what is fact and what is judgement:
-- What is in a product is fact, taken from the context.
+- What is in a product is fact, taken from that product's own list in the context.
 - The general principles are your own knowledge.
 - The recommendation is you applying those principles to the product. Do not state a principle-based inference as if the catalogue said it.
 
@@ -139,15 +144,20 @@ def search(conn, query_vector, top_k):
 
 
 def build_context(rows):
-    """Turn retrieved products into a compact, grounded context block."""
+    """Turn retrieved products into a compact, grounded context block.
+
+    Each product is numbered and its ingredient line is tagged with the product
+    name ("Ingredients of <name>:"), so the model cannot blur one product's
+    ingredients into another's when it reasons across the shortlist.
+    """
     blocks = []
-    for _dist, _pid, name, url, description, ingredients_list in rows:
-        block = f"Product: {name}\nURL: {url}\n"
+    for i, (_dist, _pid, name, url, description, ingredients_list) in enumerate(rows, 1):
+        block = f"Product {i}: {name}\nURL: {url}\n"
         if description:
             block += f"Description: {description}\n"
-        block += f"Ingredients: {ingredients_to_text(ingredients_list)}"
+        block += f"Ingredients of {name}: {ingredients_to_text(ingredients_list)}"
         blocks.append(block)
-    return "\n\n".join(blocks)
+    return "\n\n----------\n\n".join(blocks)
 
 
 def _answer_ollama(prompt, *, model, url, timeout, system):
