@@ -18,9 +18,15 @@ OLLAMA_TIMEOUT = 60.0  # seconds, per request
 
 # Models (pull each with `ollama pull <name>`).
 EXTRACT_MODEL = "ministral-3:3b"   # ingredient extraction (scraper.py)
-ANSWER_MODEL = "ministral-3:3b"    # grounded answers (query.py)
 EMBED_MODEL = "nomic-embed-text"   # semantic embeddings (embed.py / query.py)
 EMBED_DIM = 768                    # must match EMBED_MODEL's output size
+
+# Answer step: the "main model" that writes the final grounded answer (query.py).
+# Embedding and retrieval are always local; only this step's backend is
+# pluggable. A remote provider can be added later as another branch in
+# query.py's generate_answer() without touching anything else.
+ANSWER_PROVIDER = "ollama"         # implemented: "ollama" (local Ollama)
+ANSWER_MODEL = "ministral-3:3b"    # for ollama, any local chat model
 
 # Retrieval.
 TOP_K = 5  # products retrieved per query (query.py)
