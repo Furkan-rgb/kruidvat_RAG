@@ -39,6 +39,7 @@ The code is split into focused, independently testable modules:
 | `embed.py` | Embeds products into a `sqlite-vec` vector table for semantic search |
 | `query.py` | Semantic search + grounded Q&A over the embedded catalogue |
 | `logging_config.py` | Structured JSON logging |
+| `tests/` | Unit + integration tests (run with `pytest`) |
 
 **Flow:** open category page → read total product count → paginate and collect `/p/` product links → filter out already-scraped URLs → concurrently visit each product, sanitize the HTML, and ask the local LLM for ingredients → batch-write results to SQLite → embed each product into a vector table → ask grounded natural-language questions with `query.py`.
 
@@ -147,6 +148,18 @@ python query.py --search "contains Linalool"
 | `--answer-model` | `config.ANSWER_MODEL` (`gemma4:e4b`) | Local Ollama model used to write the answer |
 | `--embed-model` | `config.EMBED_MODEL` (`embeddinggemma`) | Embedding model (must match `embed.py`) |
 | `--ollama-timeout` | `60` | Request timeout (seconds) |
+
+## Tests
+
+Unit tests cover the pure logic with no network, Ollama, or live site needed: ingredient parsing (`extractor.py`), SQLite persistence (`db.py`), the embedding/query helpers, and the answer-provider dispatch. An integration test (`tests/test_vec_integration.py`) runs a full embed → search through real `sqlite-vec` using deterministic fake embeddings, so it verifies the vector wiring and the KNN query without a model server.
+
+```bash
+pip install -r requirements.txt       # runtime deps (beautifulsoup4, sqlite-vec, ...)
+pip install -r requirements-dev.txt   # pytest
+pytest
+```
+
+The integration test skips automatically if the `sqlite-vec` extension can't load in your Python build (some system Python builds disable `enable_load_extension`).
 
 ## Data model
 
