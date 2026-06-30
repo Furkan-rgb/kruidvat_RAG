@@ -34,7 +34,7 @@ EMBED_QUERY_PREFIX = "task: search result | query: "  # the question (query.py)
 # pluggable. A remote provider can be added later as another branch in
 # query.py's generate_answer() without touching anything else.
 ANSWER_PROVIDER = "ollama"  # implemented: "ollama" (local Ollama)
-ANSWER_MODEL = "gemma4:e4b-mlx"  # for ollama, any local chat model
+ANSWER_MODEL = "gemma4:12b-mlx"  # for ollama, any local chat model
 
 # How the answer is written (query.py has one system prompt per mode):
 #   "advisor" combines the retrieved product data with general haircare
