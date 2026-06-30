@@ -5,6 +5,7 @@ CREATE TABLE IF NOT EXISTS products (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT,
     url TEXT UNIQUE,
+    description TEXT,
     ingredients_list TEXT,
     scraped_at TEXT
 );
@@ -16,17 +17,24 @@ def setup_db(path):
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute(DB_SCHEMA)
+    # Migrate DBs created before the description column existed.
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(products)")}
+    if "description" not in cols:
+        conn.execute("ALTER TABLE products ADD COLUMN description TEXT")
     conn.commit()
     return conn
 
 
 def save_products_batch(conn, rows):
+    """Persist rows of (name, url, description, ingredients_list, scraped_at)."""
     if not rows:
         return
     cur = conn.cursor()
     try:
         cur.executemany(
-            "INSERT OR IGNORE INTO products (name, url, ingredients_list, scraped_at) VALUES (?, ?, ?, ?)",
+            "INSERT OR IGNORE INTO products "
+            "(name, url, description, ingredients_list, scraped_at) "
+            "VALUES (?, ?, ?, ?, ?)",
             rows,
         )
         conn.commit()
