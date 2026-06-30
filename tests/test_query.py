@@ -10,10 +10,11 @@ def test_ingredients_to_text_handles_none():
 
 
 def test_build_context_formats_each_product():
-    rows = [(0.12, 1, "Shampoo", "https://x/p/1", '["Aqua"]')]
+    rows = [(0.12, 1, "Shampoo", "https://x/p/1", "Gentle daily shampoo.", '["Aqua"]')]
     ctx = query.build_context(rows)
     assert "Product: Shampoo" in ctx
     assert "URL: https://x/p/1" in ctx
+    assert "Description: Gentle daily shampoo." in ctx
     assert "Ingredients: Aqua" in ctx
 
 

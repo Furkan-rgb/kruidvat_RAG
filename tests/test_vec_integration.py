@@ -10,7 +10,7 @@ import sqlite3
 
 import pytest
 
-import db
+from lib import db
 import embed
 import query
 
@@ -63,9 +63,9 @@ def test_embed_then_search(tmp_path, monkeypatch):
     db.save_products_batch(
         conn,
         [
-            ("Nice Shampoo", "https://x/p/1", json.dumps(["Aqua", "SLS"]), "t"),
-            ("Soft Conditioner", "https://x/p/2", json.dumps(["Aqua", "Cetearyl"]), "t"),
-            ("Strong Hairspray", "https://x/p/3", json.dumps(["Alcohol Denat"]), "t"),
+            ("Nice Shampoo", "https://x/p/1", "", json.dumps(["Aqua", "SLS"]), "t"),
+            ("Soft Conditioner", "https://x/p/2", "", json.dumps(["Aqua", "Cetearyl"]), "t"),
+            ("Strong Hairspray", "https://x/p/3", "", json.dumps(["Alcohol Denat"]), "t"),
         ],
     )
     conn.close()
@@ -92,7 +92,7 @@ def test_reset_rebuilds_vector_table(tmp_path, monkeypatch):
     dbpath = str(tmp_path / "kv.db")
     conn = db.setup_db(dbpath)
     db.save_products_batch(
-        conn, [("Nice Shampoo", "https://x/p/1", json.dumps(["Aqua"]), "t")]
+        conn, [("Nice Shampoo", "https://x/p/1", "", json.dumps(["Aqua"]), "t")]
     )
     conn.close()
 

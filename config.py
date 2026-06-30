@@ -19,7 +19,6 @@ OLLAMA_TIMEOUT = 60.0  # seconds, per request
 # Models (pull each with `ollama pull <name>`). The "-mlx" tag uses Ollama's
 # MLX engine and is Apple-Silicon only; on other platforms use the portable
 # GGUF tag instead (e.g. "gemma4:e4b").
-EXTRACT_MODEL = "gemma4:e4b-mlx"  # ingredient extraction (scraper.py)
 EMBED_MODEL = "embeddinggemma"  # semantic embeddings (embed.py / query.py)
 EMBED_DIM = 768  # must match EMBED_MODEL's output size
 

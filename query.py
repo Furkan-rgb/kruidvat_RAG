@@ -83,7 +83,7 @@ def ingredients_to_text(ingredients_list):
 
 def search(conn, query_vector, top_k):
     """Return the `top_k` nearest products as
-    (distance, id, name, url, ingredients_list), closest first."""
+    (distance, id, name, url, description, ingredients_list), closest first."""
     return conn.execute(
         """
         WITH matches AS (
@@ -91,7 +91,7 @@ def search(conn, query_vector, top_k):
             FROM vec_products
             WHERE embedding MATCH ? AND k = ?
         )
-        SELECT m.distance, p.id, p.name, p.url, p.ingredients_list
+        SELECT m.distance, p.id, p.name, p.url, p.description, p.ingredients_list
         FROM matches AS m
         JOIN products AS p ON p.id = m.product_id
         ORDER BY m.distance
@@ -103,12 +103,12 @@ def search(conn, query_vector, top_k):
 def build_context(rows):
     """Turn retrieved products into a compact, grounded context block."""
     blocks = []
-    for _dist, _pid, name, url, ingredients_list in rows:
-        blocks.append(
-            f"Product: {name}\n"
-            f"URL: {url}\n"
-            f"Ingredients: {ingredients_to_text(ingredients_list)}"
-        )
+    for _dist, _pid, name, url, description, ingredients_list in rows:
+        block = f"Product: {name}\nURL: {url}\n"
+        if description:
+            block += f"Description: {description}\n"
+        block += f"Ingredients: {ingredients_to_text(ingredients_list)}"
+        blocks.append(block)
     return "\n\n".join(blocks)
 
 
@@ -205,7 +205,7 @@ def main():
         return
 
     print(f"\nTop {len(rows)} matches:")
-    for dist, _pid, name, url, _ing in rows:
+    for dist, _pid, name, url, _desc, _ing in rows:
         print(f"  [{dist:.3f}] {name}  {url}")
 
     if not args.search:

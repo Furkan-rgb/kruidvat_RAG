@@ -1,8 +1,8 @@
-# Kruidvat Ingredient Scraper
+# Kruidvat RAG
 
-A web scraping pipeline that crawls product pages from [Kruidvat](https://www.kruidvat.nl) and extracts clean, structured cosmetic ingredient data (INCI) into a local SQLite database, then embeds it so you can ask grounded, natural-language questions about the catalogue.
+A pipeline that pulls [Kruidvat](https://www.kruidvat.nl)'s cosmetics catalogue into a local SQLite database — product names, marketing descriptions, and clean INCI ingredient lists — then embeds it so you can ask grounded, natural-language questions about it.
 
-The interesting part isn't the crawling; it's getting *reliable structured data* out of messy, inconsistent webshop HTML. Instead of brittle CSS-selector parsing, a local LLM reads the sanitized page text and returns a validated ingredient list, while distinguishing real cosmetics from hardware (hair dryers, brushes, etc.) that have no ingredients at all.
+The catalogue is a JavaScript-rendered storefront behind bot protection, so the data isn't in the page HTML. Instead of brittle DOM scraping, the pipeline reads clean, structured records straight from Kruidvat's own SAP Commerce (OCC) API — the same API the site uses. The only thing the browser is for is clearing the bot check and cookie consent once; everything after that is fast, structured API calls.
 
 ## Motivation
 
@@ -10,42 +10,40 @@ I kept buying cosmetics with ingredients I wanted to avoid. When I asked general
 
 The problem isn't that the models are bad. A general model's memory is just the wrong place to look for specific, current, region-dependent facts. The fix is grounding: give the model the real, up-to-date ingredient data and let it answer from that instead of from memory.
 
-This project builds that grounding layer: scraping Kruidvat's current EU catalogue into a structured, queryable database of products and their actual ingredients, ready to ground an LLM for reliable, hallucination-free answers.
+This project builds that grounding layer: collecting Kruidvat's current EU catalogue into a structured, queryable database of products, their descriptions, and their actual ingredients, ready to ground an LLM for reliable, hallucination-free answers.
 
 ## Highlights
 
-- **Async + concurrent**: built on `asyncio` and Playwright; product pages are scraped in parallel with a bounded semaphore.
-- **Anti-bot hardening**: uses [`playwright-stealth`](https://pypi.org/project/playwright-stealth/) to patch the automation fingerprint, plus a realistic Chromium profile (nl-NL locale, Europe/Amsterdam timezone, custom user-agent/headers, `--disable-blink-features=AutomationControlled`) and automatic cookie/"read more" handling.
-- **Local LLM extraction via Ollama**: each product page's sanitized text is sent to a local [Ollama](https://ollama.com) model over its HTTP API (`/api/generate`) with a schema-constrained, INCI-focused prompt (`{"found": bool, "ingredients": [...]}`), `temperature: 0`, and `format: json`. Calls run off the event loop and are serialized through a single-flight semaphore. No cloud APIs or keys; everything runs on your machine.
-- **Multilingual semantic embeddings**: a second pass embeds each product locally with [`embeddinggemma`](https://ollama.com/library/embeddinggemma) (Google's multilingual embedding model, a good fit for the Dutch product text + Latin INCI names) and stores the vectors in the same SQLite file via [sqlite-vec](https://github.com/asg017/sqlite-vec), making the catalogue searchable by meaning.
-- **Grounded Q&A**: `query.py` embeds your question, retrieves the closest products, and feeds them to a local LLM (`gemma4`) as context, so answers come from real catalogue data instead of the model's memory.
+- **Structured data, straight from the source**: rather than parsing fragile HTML or running an LLM over each page, it reads clean product records (name, description, INCI ingredients) from Kruidvat's SAP Commerce (OCC) API — fast and reliable, with no per-page extraction step.
+- **Gets past the bot wall once**: the catalogue is a JS-rendered SPA behind Akamai bot protection and a OneTrust consent gate. A stealthed Chromium ([`playwright-stealth`](https://pypi.org/project/playwright-stealth/), Chrome's new headless mode, an nl-NL / Europe-Amsterdam profile) clears both once; the API calls then run from inside that browser context and inherit its cookies (a plain server-side request gets a `403`).
+- **Captures descriptions, not just ingredients**: each product's use-case/marketing description is saved alongside its INCI list, so questions like *"best shampoo for dry, damaged hair"* work — not only exact-ingredient lookups.
+- **Multilingual semantic embeddings**: a second pass embeds each product locally with [`embeddinggemma`](https://ollama.com/library/embeddinggemma) (Google's multilingual embedding model, a good fit for the Dutch descriptions + Latin INCI names) and stores the vectors in the same SQLite file via [sqlite-vec](https://github.com/asg017/sqlite-vec), making the catalogue searchable by meaning.
+- **Grounded Q&A**: `query.py` embeds your question, retrieves the closest products, and feeds their descriptions + ingredients to a local LLM (`gemma4`), so answers come from real catalogue data instead of the model's memory.
 - **One place to configure**: `config.py` holds the shared defaults (database path, model names, prompt prefixes, Ollama host, and the list of categories to scrape); every script accepts CLI flags that override them per run.
 - **Pluggable answer model**: embedding and retrieval are always local, while the model that writes the final answer is selected by `ANSWER_PROVIDER` (local `ollama` today), so a more capable local model or a remote API can be swapped in later without touching retrieval.
-- **Smart pagination**: reads the total product count from the category page and computes exactly how many pages to crawl, with empty-page short-circuiting.
-- **Idempotent storage**: SQLite (WAL mode) with batched inserts, URL de-duplication, and skip-already-scraped logic so runs can be resumed. Embedding is incremental too, so re-runs only process new products.
+- **Idempotent + incremental**: SQLite (WAL mode) with batched inserts, URL de-duplication, and skip-already-scraped logic so runs can be resumed. Embedding is incremental too, so re-runs only process new products.
 
 ## Architecture
 
-The code is split into focused, independently testable modules:
+The three commands and `config.py` live at the repo root; their supporting modules live in `lib/`:
 
 | File | Responsibility |
 |------|----------------|
 | `config.py` | Shared defaults: database path, model names, prompt prefixes, Ollama host, category list |
-| `scraper.py` | CLI entry point and orchestration (crawl → extract → store) |
-| `browser.py` | Playwright context/stealth setup, navigation, link & name extraction |
-| `pager.py` | Category pagination and product-link collection |
-| `extractor.py` | HTML sanitization + LLM ingredient extraction and response parsing |
-| `db.py` | SQLite schema and batched persistence |
-| `embed.py` | Embeds products into a `sqlite-vec` vector table for semantic search |
-| `query.py` | Semantic search + grounded Q&A over the embedded catalogue |
-| `logging_config.py` | Structured JSON logging |
+| `scraper.py` | Command: scrape a category via the API (list → product details → store) |
+| `embed.py` | Command: embed products into a `sqlite-vec` vector table |
+| `query.py` | Command: semantic search + grounded Q&A over the catalogue |
+| `lib/api.py` | Kruidvat OCC API client: consent/bot-check, paginated product list, product detail |
+| `lib/browser.py` | Playwright stealth context + cookie-consent handling |
+| `lib/extractor.py` | INCI ingredient-string parsing and cleaning helpers |
+| `lib/db.py` | SQLite schema and batched persistence |
 | `tests/` | Unit + integration tests (run with `pytest`) |
 
-**Flow:** open category page → read total product count → paginate and collect `/p/` product links → filter out already-scraped URLs → concurrently visit each product, sanitize the HTML, and ask the local LLM for ingredients → batch-write results to SQLite → embed each product into a vector table → ask grounded natural-language questions with `query.py`.
+**Flow:** open the category once (clear consent + bot check, read its `categoryCode`) → page through the OCC **search** API for product URLs → fetch each product's **detail** API for name, description, and ingredients → write to SQLite → embed `name + description + ingredients` with `embeddinggemma` into a `sqlite-vec` table → ask grounded questions with `query.py` (retrieve → answer with `gemma4`).
 
 ## Setup
 
-Requires Python 3.9+ and a running [Ollama](https://ollama.com) instance; extraction, embedding, and answering all call Ollama locally, so it must be installed and serving before you run them.
+Requires Python 3.9+ and a running [Ollama](https://ollama.com) instance. Ollama is used for **embedding** and **answering** (the scrape itself needs no model), so it must be installed and serving before you embed or query.
 
 ```bash
 # 1. Create and activate a virtual environment
@@ -56,9 +54,8 @@ pip install -r requirements.txt
 python -m playwright install chromium
 
 # 3. Pull the models and make sure Ollama is running
-ollama pull ministral-3:3b      # ingredient extraction (scraper)
 ollama pull embeddinggemma      # semantic embeddings (embed + query)
-ollama pull gemma4:e4b          # grounded answers (query)
+ollama pull gemma4:e4b-mlx      # grounded answers (query); use gemma4:e4b off Apple Silicon
 ollama serve   # if not already running (default: http://localhost:11434)
 ```
 
@@ -83,12 +80,12 @@ With no arguments, this scrapes every category in `config.CATEGORIES`:
 python scraper.py
 ```
 
-Override the targets with one or more `--category` flags (repeatable):
+Override the targets with one or more `--category` flags (repeatable), or cap the size while iterating:
 
 ```bash
 python scraper.py \
   --category "https://www.kruidvat.nl/verzorging/haarstylingproducten" \
-  --db kruidvat.db
+  --limit 10 --db kruidvat.db
 ```
 
 Useful options:
@@ -97,14 +94,12 @@ Useful options:
 |------|---------|-------------|
 | `--category URL` | `config.CATEGORIES` | Category URL to scrape (repeatable) |
 | `--db` | `config.DB_PATH` (`kruidvat.db`) | Output SQLite database |
-| `--headed` | off | Show the browser window (debugging) |
-| `--concurrency N` | 10 | Concurrent product pages |
-| `--max-pages N` | 200 | Cap on category pages crawled |
 | `--limit N` | none | Process at most N products per category |
-| `--delay S` | 0.2 | Delay between paginated requests |
-| `--ollama-model` | `config.EXTRACT_MODEL` | Local Ollama model used for extraction |
-| `--ollama-url` | `config.GENERATE_URL` | Ollama generate endpoint |
-| `--ollama-timeout` | `60` | LLM request timeout (seconds) |
+| `--max-pages N` | 200 | Cap on API pages fetched per category |
+| `--headed` | off | Show the browser window (debugging) |
+| `--proxy URL` | none | Route the browser through a proxy |
+
+A no-argument run scrapes both full categories (~1,000 products) and takes ~15 min, so use `--limit` while iterating.
 
 ### 2. Embed for semantic search
 
@@ -114,7 +109,7 @@ After scraping, build a vector for every product so the catalogue can be searche
 python embed.py --db kruidvat.db
 ```
 
-This reads products that have ingredients, embeds `name + ingredients` with a local Ollama embedding model, and writes the vectors into a `vec_products` table inside the same SQLite file using [sqlite-vec](https://github.com/asg017/sqlite-vec). Re-running only embeds new products, so it is safe to run after each scrape.
+This reads products that have ingredients, embeds `name + description + ingredients` with a local Ollama embedding model, and writes the vectors into a `vec_products` table inside the same SQLite file using [sqlite-vec](https://github.com/asg017/sqlite-vec). Re-running only embeds new products, so it is safe to run after each scrape.
 
 **Changing the embedding model?** Re-run with `--reset`. The incremental skip can't tell the model changed, and vectors from different models are not comparable, so `--reset` drops and rebuilds the vector table first.
 
@@ -129,29 +124,29 @@ This reads products that have ingredients, embeds `name + ingredients` with a lo
 
 ### 3. Ask questions (RAG)
 
-Once products are embedded, ask questions in natural language. `query.py` embeds your question, retrieves the closest products, and (by default) grounds a local LLM on them so the answer comes from real ingredient data:
+Once products are embedded, ask questions in natural language. `query.py` embeds your question, retrieves the closest products, and (by default) grounds a local LLM on their descriptions + ingredients:
 
 ```bash
 # Grounded answer
-python query.py "Which hairsprays are alcohol-free?"
+python query.py "Which shampoo is best for dry and damaged hair?"
 
 # Just retrieve the most relevant products, no LLM
-python query.py --search "contains Linalool"
+python query.py --search "sulfate-free shampoo"
 ```
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--db` | `config.DB_PATH` (`kruidvat.db`) | SQLite database to query |
 | `--search` | off | Only print retrieved products, skip the LLM answer |
-| `--top-k N` | `config.TOP_K` (`5`) | Number of products to retrieve |
+| `--top-k N` | `config.TOP_K` (`10`) | Number of products to retrieve |
 | `--provider` | `config.ANSWER_PROVIDER` (`ollama`) | Backend that writes the answer (local for now) |
-| `--answer-model` | `config.ANSWER_MODEL` (`gemma4:e4b`) | Local Ollama model used to write the answer |
+| `--answer-model` | `config.ANSWER_MODEL` (`gemma4:e4b-mlx`) | Local Ollama model used to write the answer |
 | `--embed-model` | `config.EMBED_MODEL` (`embeddinggemma`) | Embedding model (must match `embed.py`) |
 | `--ollama-timeout` | `60` | Request timeout (seconds) |
 
 ## Tests
 
-Unit tests cover the pure logic with no network, Ollama, or live site needed: ingredient parsing (`extractor.py`), SQLite persistence (`db.py`), the embedding/query helpers, and the answer-provider dispatch. An integration test (`tests/test_vec_integration.py`) runs a full embed → search through real `sqlite-vec` using deterministic fake embeddings, so it verifies the vector wiring and the KNN query without a model server.
+Unit tests cover the pure logic with no network, Ollama, or live site needed: ingredient parsing (`lib/extractor.py`), SQLite persistence (`lib/db.py`), the embedding/query helpers, and the answer-provider dispatch. An integration test (`tests/test_vec_integration.py`) runs a full embed → search through real `sqlite-vec` using deterministic fake embeddings, so it verifies the vector wiring and the KNN query without a model server. A live end-to-end test (`tests/test_e2e_ollama.py`) runs the real embed → answer path and auto-skips unless Ollama and the models are present.
 
 ```bash
 pip install -r requirements.txt       # runtime deps (beautifulsoup4, sqlite-vec, ...)
@@ -168,7 +163,8 @@ products(
   id              INTEGER PRIMARY KEY,
   name            TEXT,
   url             TEXT UNIQUE,
-  ingredients_list TEXT,   -- JSON array of normalized ingredients
+  description     TEXT,    -- product description from the API
+  ingredients_list TEXT,   -- JSON array of normalized INCI ingredients
   scraped_at      TEXT     -- ISO 8601 UTC
 )
 ```
@@ -182,20 +178,14 @@ vec_products USING vec0(
 )
 ```
 
-Each row is self-contained and easy to export to JSONL for embedding, one record (or one ingredient chunk) per vector.
-
 ## To do
 
-- **Test and compare different embedding models.** `embeddinggemma` is the current default: multilingual (a good fit for the Dutch text + Latin INCI names), pairs with the Gemma 4 answer model, and is a 768-dim drop-in. It's still worth benchmarking on real queries against:
-  - `embeddinggemma` (768-dim, current default)
-  - `bge-m3` (1024-dim; strongest multilingual retrieval, needs `EMBED_DIM = 1024` and a `--reset` re-embed)
-  - `qwen3-embedding:0.6b` (flexible dims; top sub-1GB multilingual)
-  - `nomic-embed-text` (English-focused baseline)
-
-  Both `embed.py` and `query.py` take `--embed-model` / `--embed-dim` (or set `EMBED_MODEL` / `EMBED_DIM` in `config.py`); remember the per-model prompt prefixes (`EMBED_DOC_PREFIX` / `EMBED_QUERY_PREFIX`) and re-embed with `--reset` when switching. Pick a set of representative questions, measure retrieval quality (and answer quality) per model, and record the results here.
+- **Hybrid keyword + vector search.** Semantic search is great for use-case questions ("good for dry hair") but vague for exact-ingredient ones ("everything without SLS", "which contain Limonene"). A SQL `LIKE` / keyword pre-filter on `ingredients_list`, combined with the vector results, would make ingredient-exact questions exhaustive. No new dependency — plain SQLite.
+- **Test and compare different embedding models.** `embeddinggemma` is the current default: multilingual and a 768-dim drop-in. Worth benchmarking on real queries against `bge-m3` (1024-dim; strong multilingual, needs `EMBED_DIM = 1024` + a `--reset` re-embed), `qwen3-embedding:0.6b`, and `nomic-embed-text` (English baseline). Remember the per-model prompt prefixes and re-embed with `--reset` when switching.
 - **Set up an evaluation harness** so the comparison above is repeatable rather than eyeballed.
 - **Add a remote answer provider** (e.g. Anthropic / OpenAI) as a branch in `query.py`'s `generate_answer()`, selected via `ANSWER_PROVIDER`, with the API key read from the environment. Embedding and retrieval stay local.
+- **Capture more product attributes.** The OCC product API also exposes hair-type and other classification fields; saving those could sharpen use-case queries further (note: hair *porosity* is not in the data).
 
 ## Notes
 
-This is a personal project built to explore robust, LLM-assisted data extraction from real-world e-commerce pages. Please scrape responsibly and in line with the target site's terms of service.
+This is a personal project for grounding a local LLM on real, current catalogue data. The product data comes from Kruidvat's own API; please use it responsibly and in line with the site's terms of service.

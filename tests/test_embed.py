@@ -17,9 +17,16 @@ def test_ingredients_to_text_non_list_json_returns_raw():
     assert embed.ingredients_to_text('{"a": 1}') == '{"a": 1}'
 
 
-def test_build_text_contains_name_and_ingredients():
-    t = embed.build_text("Shampoo", "Aqua, Glycerin")
-    assert "Shampoo" in t and "Aqua" in t and "Ingredients:" in t
+def test_build_text_contains_name_description_and_ingredients():
+    t = embed.build_text("Shampoo", "Gentle daily shampoo.", "Aqua, Glycerin")
+    assert "Shampoo" in t
+    assert "Gentle daily shampoo." in t
+    assert "Aqua" in t and "Ingredients:" in t
+
+
+def test_build_text_skips_empty_description():
+    t = embed.build_text("Shampoo", "", "Aqua")
+    assert t == "Shampoo\nIngredients: Aqua"
 
 
 def test_get_embedding_builds_request_and_parses(monkeypatch):

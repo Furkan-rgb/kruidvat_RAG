@@ -66,10 +66,15 @@ def ingredients_to_text(ingredients_list):
     return ingredients_list
 
 
-def build_text(name, ingredients):
-    """The text we embed: the name carries the product type, the ingredients
-    carry the chemical detail, so search matches on both."""
-    return f"{name}\nIngredients: {ingredients}"
+def build_text(name, description, ingredients):
+    """The text we embed: the name carries the product type, the description
+    carries the use-case / hair-type wording, and the ingredients carry the
+    chemical detail, so search matches on all three."""
+    parts = [name or ""]
+    if description:
+        parts.append(description)
+    parts.append(f"Ingredients: {ingredients}")
+    return "\n".join(parts)
 
 
 def main():
@@ -130,7 +135,7 @@ def main():
     # only embed products that actually have ingredients
     rows = conn.execute(
         """
-        SELECT id, name, ingredients_list
+        SELECT id, name, description, ingredients_list
         FROM products
         WHERE ingredients_list IS NOT NULL AND TRIM(ingredients_list) != ''
         """
@@ -140,10 +145,10 @@ def main():
     print(f"{len(rows)} products with ingredients | {len(todo)} new to embed.")
 
     embedded = 0
-    for i, (pid, name, ingredients_list) in enumerate(todo, start=1):
+    for i, (pid, name, description, ingredients_list) in enumerate(todo, start=1):
         # Prefix with the model's document instruction (see config.EMBED_DOC_PREFIX).
         text = config.EMBED_DOC_PREFIX + build_text(
-            name or "", ingredients_to_text(ingredients_list)
+            name or "", description or "", ingredients_to_text(ingredients_list)
         )
         try:
             vector = get_embedding(

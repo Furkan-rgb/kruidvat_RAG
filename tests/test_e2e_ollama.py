@@ -24,7 +24,7 @@ from urllib import request as urllib_request
 import pytest
 
 import config
-import db
+from lib import db
 import embed
 import query
 
@@ -77,11 +77,11 @@ def test_full_pipeline_against_real_ollama(tmp_path, monkeypatch, capsys):
     db.save_products_batch(
         conn,
         [
-            ("Hydrating Shampoo", "https://x/p/1",
+            ("Hydrating Shampoo", "https://x/p/1", "Daily hydrating shampoo.",
              json.dumps(["Aqua", "Sodium Laureth Sulfate", "Glycerin"]), "t"),
-            ("Extra Strong Hairspray", "https://x/p/2",
+            ("Extra Strong Hairspray", "https://x/p/2", "Strong-hold hairspray.",
              json.dumps(["Alcohol Denat", "VP/VA Copolymer", "Parfum"]), "t"),
-            ("Nourishing Hair Oil", "https://x/p/3",
+            ("Nourishing Hair Oil", "https://x/p/3", "Nourishing oil for dry hair.",
              json.dumps(["Argania Spinosa Kernel Oil", "Limonene", "Linalool"]), "t"),
         ],
     )
