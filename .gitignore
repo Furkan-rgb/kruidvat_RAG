@@ -12,6 +12,8 @@ venv/
 
 # Output database
 *.db
+*.db-shm
+*.db-wal
 
 # macOS
 .DS_Store
