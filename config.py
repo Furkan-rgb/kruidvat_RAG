@@ -14,7 +14,7 @@ DB_PATH = "kruidvat.db"
 OLLAMA_HOST = "http://localhost:11434"
 GENERATE_URL = f"{OLLAMA_HOST}/api/generate"
 EMBEDDINGS_URL = f"{OLLAMA_HOST}/api/embeddings"
-OLLAMA_TIMEOUT = 60.0  # seconds, per request
+OLLAMA_TIMEOUT = 120.0  # seconds, per request
 
 # Models (pull each with `ollama pull <name>`). The "-mlx" tag uses Ollama's
 # MLX engine and is Apple-Silicon only; on other platforms use the portable
