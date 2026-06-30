@@ -27,25 +27,33 @@ Top 10 matches:
   ... (6 more)
 
 Answer:
-For high-porous, curly (2c) hair, you need definition and moisture without a
-heavy formula, since porous hair loses moisture easily.
+High-porosity hair has a raised cuticle: it takes on moisture easily but loses
+it quickly, so it wants moisture and sealing without a heavy, drying formula.
+The catalogue does not record porosity or curl type (2c), so suitability is
+inferred from each product's own ingredients and description.
 
-1. Umberto Giannini Curl Whip Activating Mousse - likely the best fit: a
-   "lightweight formula" with "intense hydration", and its ingredients include
-   Shea Butter (Butyrospermum Parkii) and Linseed Oil for moisture.
-2. John Frieda Frizz-Ease Air-Dry Waves Styling Mousse - "nourish and strengthen
-   natural curls", a lightweight, non-sticky formula that helps with frizz.
-3. Umberto Giannini Mousse Curl Foam Anti-Frizz - contains Glycerin and
-   Panthenol, humectants that help hold moisture in the hair shaft.
+1. Cantu Avocado Hydrating Styling Mousse
+   Catalogue facts: contains Persea Gratissima (Avocado) Oil, Butyrospermum
+     Parkii (Shea) Butter, Mel (Honey), Panthenol and Silk Amino Acids.
+   Judgment: effectively a "treatment mousse"; the oils and butter give the
+     richer moisture that helps seal the cuticle of high-porosity hair.
+
+2. Umberto Giannini Curl Whip Activating Mousse
+   Catalogue facts: description says "intense hydration", a "lightweight formula"
+     for "all curl types"; contains Propylene Glycol (a humectant).
+   Judgment: a good lighter option, since high-porosity hair is weighed down easily.
+
+3. John Frieda Frizz-Ease Air-Dry Waves Styling Mousse
+   Catalogue facts: contains Rosa Canina (rosehip) Fruit Oil; described as a
+     "curl-loving, anti-frizz" formula.
+   Judgment: rosehip nourishes porous strands and helps smooth frizz.
 
 Products to be cautious with:
-- Cantu Avocado Hydrating Styling Mousse - rich in heavier oils (Shea Butter,
-  Flaxseed Oil) that may be too dense for some high-porosity hair.
-- Andrélon Power Hold Mousse - marketed for "ultra-strong hold", a structuring
-  formula that can feel stiff rather than flexibly defined.
+- Andrélon Power Hold Mousse: contains Alcohol Denat. and is built for a
+  "strong hold", which can be drying and stiff on porous hair.
 ```
 
-Every product and ingredient named comes from the retrieved data, while the haircare reasoning (porous hair loses moisture, heavy oils can weigh curls down) is the model's own and is presented as such. Ask the same question with `--mode strict` to get only what the ingredient lists literally say.
+Notice three things: it states outright that porosity and curl type are not in the catalogue rather than refusing or bluffing; every ingredient is a "Catalogue fact" copied from that product's own list (each one above was verified against the database); and the haircare reasoning is kept in a separate "Judgment" line as the model's own. Ask the same question with `--mode strict` to get only what the ingredient lists literally say.
 
 ## Highlights
 
