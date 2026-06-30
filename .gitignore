@@ -10,8 +10,8 @@ venv/
 # Logs
 *.log
 
-# Scraper output database
-kruidvat.db
+# Output database
+*.db
 
 # macOS
 .DS_Store
