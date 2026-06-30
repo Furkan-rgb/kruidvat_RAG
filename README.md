@@ -98,10 +98,11 @@ ollama serve   # if not already running (default: http://localhost:11434)
 
 Shared defaults live in `config.py`: the database path, model names, the Ollama host, and the `CATEGORIES` list that `scraper.py` crawls by default. Edit that file to change them globally, or pass the matching CLI flag to override a single run.
 
-Two things worth knowing:
+A few things worth knowing:
 
 - **Embedding prompt prefixes.** EmbeddingGemma embeds documents and queries with different task instructions, kept in `config.py` as `EMBED_DOC_PREFIX` / `EMBED_QUERY_PREFIX`. If you switch to a model with other conventions (e.g. `bge-m3` needs none), update or empty them there.
 - **Pluggable answer model.** The model that writes the final answer is selected by `ANSWER_PROVIDER`, which is `ollama` (local) for now. Embedding and retrieval are always local; a remote provider can be added later as a single branch in `query.py`'s `generate_answer()` without touching anything else.
+- **Answer-model capacity affects grounding.** The advisor reasons over all `TOP_K` retrieved products in a single prompt, so it has to keep each product's ingredient list separate. In testing, `gemma4:e4b-mlx` (about 4b effective parameters) still produced cross-attribution mistakes at `TOP_K = 10` even with the grounding fixes in the prompt and context, crediting one product with an ingredient that actually belonged to another. Switching the answer model to `gemma4:12b-mlx` removed those in our checks. If you stay on a smaller model, lowering `TOP_K` (fewer products to track at once) is the cheaper lever. This only concerns ingredient grounding: any model can still get a "what does this ingredient do" judgement wrong, which is a separate problem from attribution.
 
 ## Usage
 
