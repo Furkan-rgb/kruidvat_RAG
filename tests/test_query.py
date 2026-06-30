@@ -50,6 +50,38 @@ def test_generate_answer_ollama_path(monkeypatch):
     assert "Does it contain Aqua?" in captured["payload"]["prompt"]
 
 
+def test_mode_selects_system_prompt_and_closing(monkeypatch):
+    captured = {}
+
+    def fake_post(url, payload, timeout):
+        captured["system"] = payload["system"]
+        captured["prompt"] = payload["prompt"]
+        return {"response": "ok"}
+
+    monkeypatch.setattr(query, "_post_json", fake_post)
+
+    query.generate_answer(
+        "q", "ctx", provider="ollama", model="m", url="u", timeout=1, mode="advisor"
+    )
+    assert captured["system"] == query.ADVISOR_SYSTEM_PROMPT
+    assert "recommend" in captured["prompt"].lower()
+
+    query.generate_answer(
+        "q", "ctx", provider="ollama", model="m", url="u", timeout=1, mode="strict"
+    )
+    assert captured["system"] == query.GROUNDED_SYSTEM_PROMPT
+    assert "only the context" in captured["prompt"]
+
+
+def test_generate_answer_defaults_to_advisor(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(
+        query, "_post_json", lambda url, payload, timeout: captured.update(payload) or {"response": "ok"}
+    )
+    query.generate_answer("q", "ctx", provider="ollama", model="m", url="u", timeout=1)
+    assert captured["system"] == query.ADVISOR_SYSTEM_PROMPT
+
+
 def test_get_embedding_delegates_to_post_json(monkeypatch):
     monkeypatch.setattr(
         query, "_post_json", lambda url, payload, timeout: {"embedding": [1.0, 2.0]}

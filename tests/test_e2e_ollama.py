@@ -125,6 +125,6 @@ def test_full_pipeline_against_real_ollama(tmp_path, monkeypatch, capsys):
     # surface the real output for human inspection (run with `pytest -s`)
     with capsys.disabled():
         print(f"\n--- E2E retrieval (embed={EMBED_MODEL}) ---")
-        for d, _id, name, _url, _ing in rows:
+        for d, _id, name, _url, _desc, _ing in rows:
             print(f"  [{d:.3f}] {name}")
         print(f"--- E2E answer ({ANSWER_MODEL}) ---\n{answer}\n")

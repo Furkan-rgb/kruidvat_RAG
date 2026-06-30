@@ -36,6 +36,13 @@ EMBED_QUERY_PREFIX = "task: search result | query: "  # the question (query.py)
 ANSWER_PROVIDER = "ollama"  # implemented: "ollama" (local Ollama)
 ANSWER_MODEL = "gemma4:e4b-mlx"  # for ollama, any local chat model
 
+# How the answer is written (query.py has one system prompt per mode):
+#   "advisor" combines the retrieved product data with general haircare
+#       knowledge to recommend, and stays explicit about which is which.
+#   "strict"  stays inside the retrieved context and only reports what the
+#       ingredient lists literally say (good for exact "is it X-free?" lookups).
+ANSWER_MODE = "advisor"  # "advisor" or "strict"
+
 # Retrieval.
 TOP_K = 10  # products retrieved per query (query.py)
 
