@@ -20,6 +20,7 @@ This project builds that grounding layer: scraping Kruidvat's current EU catalog
 - **Semantic embeddings**: a second pass embeds each product locally with [`nomic-embed-text`](https://ollama.com/library/nomic-embed-text) and stores the vectors in the same SQLite file via [sqlite-vec](https://github.com/asg017/sqlite-vec), making the catalogue searchable by meaning.
 - **Grounded Q&A**: `query.py` embeds your question, retrieves the closest products, and feeds them to a local LLM as context, so answers come from real catalogue data instead of the model's memory.
 - **One place to configure**: `config.py` holds the shared defaults (database path, model names, Ollama host, and the list of categories to scrape); every script accepts CLI flags that override them per run.
+- **Pluggable answer model**: embedding and retrieval are always local, while the model that writes the final answer is selected by `ANSWER_PROVIDER` (local `ollama` today), so a more capable local model or a remote API can be swapped in later without touching retrieval.
 - **Smart pagination**: reads the total product count from the category page and computes exactly how many pages to crawl, with empty-page short-circuiting.
 - **Idempotent storage**: SQLite (WAL mode) with batched inserts, URL de-duplication, and skip-already-scraped logic so runs can be resumed. Embedding is incremental too, so re-runs only process new products.
 
@@ -62,6 +63,8 @@ ollama serve   # if not already running (default: http://localhost:11434)
 ## Configuration
 
 Shared defaults live in `config.py`: the database path, model names, the Ollama host, and the `CATEGORIES` list that `scraper.py` crawls by default. Edit that file to change them globally, or pass the matching CLI flag to override a single run.
+
+The model that writes the final answer is selected by `ANSWER_PROVIDER`, which is `ollama` (local) for now. Embedding and retrieval are always local; a remote provider can be added later as a single branch in `query.py`'s `generate_answer()` without touching anything else.
 
 ## Usage
 
@@ -133,6 +136,7 @@ python query.py --search "contains Linalool"
 | `--db` | `config.DB_PATH` (`kruidvat.db`) | SQLite database to query |
 | `--search` | off | Only print retrieved products, skip the LLM answer |
 | `--top-k N` | `config.TOP_K` (`5`) | Number of products to retrieve |
+| `--provider` | `config.ANSWER_PROVIDER` (`ollama`) | Backend that writes the answer (local for now) |
 | `--answer-model` | `config.ANSWER_MODEL` (`ministral-3:3b`) | Local Ollama model used to write the answer |
 | `--embed-model` | `config.EMBED_MODEL` (`nomic-embed-text`) | Embedding model (must match `embed.py`) |
 | `--ollama-timeout` | `60` | Request timeout (seconds) |
@@ -170,6 +174,7 @@ Each row is self-contained and easy to export to JSONL for embedding, one record
 
   Both `embed.py` and `query.py` already take `--embed-model` / `--embed-dim` (or set `EMBED_MODEL` / `EMBED_DIM` in `config.py`), so swapping models is just a flag plus a re-embed. Pick a set of representative questions, measure retrieval quality (and answer quality) per model, and record the results here.
 - **Set up an evaluation harness** so the comparison above is repeatable rather than eyeballed.
+- **Add a remote answer provider** (e.g. Anthropic / OpenAI) as a branch in `query.py`'s `generate_answer()`, selected via `ANSWER_PROVIDER`, with the API key read from the environment. Embedding and retrieval stay local.
 
 ## Notes
 
