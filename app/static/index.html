@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="A local, catalogue-grounded cosmetics ingredient advisor.">
+  <title>Kruidvat Ingredient Advisor</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <header class="site-header">
+    <div class="shell header-inner">
+      <div>
+        <p class="eyebrow">Local catalogue intelligence</p>
+        <h1>Kruidvat Ingredient Advisor</h1>
+        <p class="intro">Ask questions about cosmetics products using retrieved Kruidvat catalogue data.</p>
+      </div>
+      <div id="health-status" class="status status-loading" role="status" aria-live="polite">
+        <span class="status-dot" aria-hidden="true"></span>
+        <span>Checking setup…</span>
+      </div>
+    </div>
+  </header>
+
+  <main class="shell">
+    <section class="query-panel" aria-labelledby="ask-heading">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Ask the catalogue</p>
+          <h2 id="ask-heading">What would you like to find?</h2>
+        </div>
+        <p class="local-note">Retrieval and answering use your configured local SQLite and Ollama setup.</p>
+      </div>
+
+      <form id="ask-form">
+        <label for="question">Your question</label>
+        <textarea id="question" name="question" rows="5" required aria-describedby="keyboard-hint" placeholder="A good hair mousse for wavy 2c hair"></textarea>
+        <p id="keyboard-hint" class="field-hint">Press Enter to ask. Use Shift+Enter for a new line.</p>
+
+        <div class="examples" aria-label="Example questions">
+          <span>Try an example:</span>
+          <button type="button" class="example" data-question="A good hair mousse for wavy 2c hair">Wavy 2c mousse</button>
+          <button type="button" class="example" data-question="Which shampoo is best for fine, flat hair?">Fine, flat hair</button>
+          <button type="button" class="example" data-question="Which of these products are sulfate-free?">Sulfate-free</button>
+        </div>
+
+        <div class="controls">
+          <div class="field-group">
+            <label for="mode">Answer mode</label>
+            <select id="mode" name="mode">
+              <option value="advisor">Advisor</option>
+              <option value="strict">Strict</option>
+            </select>
+          </div>
+          <button id="submit-button" class="primary-button" type="submit">Ask advisor</button>
+        </div>
+
+        <details class="advanced">
+          <summary>Advanced retrieval settings</summary>
+          <div class="advanced-content">
+            <label for="top-k">Products to retrieve</label>
+            <input id="top-k" name="top_k" type="number" min="1" max="25" value="10">
+            <p class="field-hint">Top-k controls how many semantically similar products are supplied as evidence (maximum 25).</p>
+          </div>
+        </details>
+      </form>
+
+      <div id="loading" class="loading" hidden role="status" aria-live="polite">
+        <span class="spinner" aria-hidden="true"></span>
+        <span id="loading-message">Searching the catalogue and generating a grounded answer...</span>
+      </div>
+      <div id="error" class="message error-message" hidden role="alert"></div>
+    </section>
+
+    <section id="results" class="results" hidden aria-live="polite">
+      <article class="answer-card">
+        <div class="answer-meta">
+          <span>Generated recommendation</span>
+          <span id="answer-mode" class="mode-badge"></span>
+        </div>
+        <h2>Grounded answer</h2>
+        <div id="answer-text" class="answer-text"></div>
+        <p class="disclaimer">Informational guidance only. This is not medical advice; consult a qualified professional for health concerns or allergies.</p>
+      </article>
+
+      <section class="evidence" aria-labelledby="evidence-heading">
+        <div class="evidence-heading">
+          <div>
+            <p class="eyebrow">Retrieved catalogue evidence</p>
+            <h2 id="evidence-heading">Products used for this answer</h2>
+          </div>
+          <p id="result-meta" class="result-meta"></p>
+        </div>
+        <div id="product-list" class="product-grid"></div>
+      </section>
+    </section>
+  </main>
+
+  <footer class="shell footer">Local-first semantic search. Product formulations can change; verify important details at the linked source.</footer>
+</body>
+</html>

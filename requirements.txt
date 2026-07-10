@@ -3,3 +3,5 @@ playwright-stealth
 beautifulsoup4
 tqdm
 sqlite-vec
+fastapi
+uvicorn
