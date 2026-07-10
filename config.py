@@ -9,8 +9,8 @@ choices, the Ollama host, or the list of categories to scrape.
 # Where the scraped catalogue and its embeddings are stored.
 DB_PATH = "kruidvat.db"
 
-# Local Ollama server. Extraction and answering use /api/generate; embedding
-# uses /api/embeddings.
+# Local Ollama server. Answering uses /api/generate; embedding uses
+# /api/embeddings. Scraping does not use a model.
 OLLAMA_HOST = "http://localhost:11434"
 GENERATE_URL = f"{OLLAMA_HOST}/api/generate"
 EMBEDDINGS_URL = f"{OLLAMA_HOST}/api/embeddings"

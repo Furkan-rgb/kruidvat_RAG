@@ -23,6 +23,15 @@ Open <http://127.0.0.1:8000>. The original CLI remains available with `python qu
 
 The catalogue is a JavaScript-rendered storefront behind bot protection, so the data isn't in the page HTML. Instead of brittle DOM scraping, the pipeline reads clean, structured records straight from Kruidvat's own SAP Commerce (OCC) API, the same API the site uses. The only thing the browser is for is clearing the bot check and cookie consent once; everything after that is fast, structured API calls.
 
+## Technology stack
+
+- **Backend:** Python 3.11, FastAPI, and Pydantic
+- **Retrieval and storage:** SQLite and sqlite-vec
+- **Models:** Ollama through provider-neutral embedding and answer adapters
+- **Data collection:** Playwright, playwright-stealth, and Kruidvat's SAP Commerce API
+- **Frontend:** semantic HTML, CSS, and vanilla JavaScript with streamed NDJSON responses
+- **Quality:** pytest integration/API/unit tests and GitHub Actions CI
+
 ## Motivation
 
 I kept buying cosmetics with ingredients I wanted to avoid. When I asked general AI assistants (ChatGPT, Claude, Gemini) what was in a product, the answers weren't reliable: often based on outdated formulations, confusing the US and EU versions of the same product (which frequently differ), or simply hallucinating ingredients that weren't there.
@@ -128,7 +137,7 @@ There is no keyword pre-filter, reranker, query planner, agent, or multi-step re
 
 ## Setup
 
-Requires Python 3.9+ and a running [Ollama](https://ollama.com) instance. Ollama is used for **embedding** and **answering** (the scrape itself needs no model), so it must be installed and serving before you embed or query.
+Requires Python 3.11+ and a running [Ollama](https://ollama.com) instance. Ollama is used for **embedding** and **answering** (the scrape itself needs no model), so it must be installed and serving before you embed or query.
 
 ```bash
 # 1. Create and activate a virtual environment
@@ -199,7 +208,7 @@ python embed.py --db kruidvat.db
 
 This reads products that have ingredients, embeds `name + description + ingredients` with a local Ollama embedding model, and writes the vectors into a `vec_products` table inside the same SQLite file using [sqlite-vec](https://github.com/asg017/sqlite-vec). Re-running only embeds new products, so it is safe to run after each scrape.
 
-**Changing the embedding model?** Re-run with `--reset`. The incremental skip can't tell the model changed, and vectors from different models are not comparable, so `--reset` drops and rebuilds the vector table first.
+**Changing the embedding profile?** Re-run with `--reset`. The stored metadata detects changes to the provider, model, dimension, or prompt prefixes and refuses to mix incompatible vectors; `--reset` rebuilds the vector table with the new profile.
 
 | Flag | Default | Description |
 |------|---------|-------------|
@@ -252,7 +261,7 @@ Open <http://127.0.0.1:8000>. The page checks setup readiness immediately, suppo
 
 The local API provides:
 
-- `GET /api/health` — database, table, vector-index, count, and configured-model readiness without calling Ollama.
+- `GET /api/health` — database, table, vector-index, count, configured-model metadata, and embedding-profile compatibility without contacting Ollama.
 - `POST /api/ask` — one complete-question embedding, one sqlite-vec retrieval, and one grounded answer call.
 - `POST /api/ask/stream` — the same pipeline as newline-delimited JSON events, including real stage updates, retrieved evidence, answer tokens, completion, and safe errors.
 - `GET /api/products/{product_id}` — the stored product record with parsed ingredients.
@@ -264,6 +273,8 @@ The browser uses the streaming endpoint so products appear as soon as retrieval 
 ## Tests
 
 Unit tests cover ingredient parsing, persistence, the shared RAG service, API, embedding/query helpers, and answer-provider dispatch without a live model. An integration test (`tests/test_vec_integration.py`) runs a full embed → search through real `sqlite-vec` using deterministic fake embeddings. A live end-to-end test (`tests/test_e2e_ollama.py`) auto-skips unless Ollama and both models are present.
+
+GitHub Actions runs the same test suite on Python 3.11 for every push and pull request. CI requires no Ollama instance; the live test skips automatically when the configured models are unavailable.
 
 ```bash
 pip install -r requirements.txt       # runtime deps (beautifulsoup4, sqlite-vec, ...)
