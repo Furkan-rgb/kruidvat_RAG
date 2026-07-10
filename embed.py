@@ -32,6 +32,14 @@ import sqlite_vec
 from sqlite_vec import serialize_float32
 
 import config
+from app.index_metadata import (
+    METADATA_TABLE,
+    profile_mismatches,
+    provider_profile,
+    read_index_metadata,
+    write_index_metadata,
+)
+from app.providers import create_embedding_provider
 
 
 def get_embedding(text, *, model, url, timeout):
@@ -85,6 +93,11 @@ def main():
         "--db", default=config.DB_PATH, help="SQLite database file written by scraper.py"
     )
     parser.add_argument(
+        "--embed-provider",
+        default=config.EMBED_PROVIDER,
+        help="Backend that creates embeddings (currently: ollama)",
+    )
+    parser.add_argument(
         "--embed-model", default=config.EMBED_MODEL, help="Local Ollama embedding model"
     )
     parser.add_argument(
@@ -103,7 +116,23 @@ def main():
         help="Drop and rebuild the vector table before embedding "
         "(use when changing the embedding model)",
     )
+    parser.add_argument(
+        "--adopt-legacy-index",
+        action="store_true",
+        help="Record the current embedding profile for a pre-metadata index "
+        "without rebuilding it (only use when you know the profile matches)",
+    )
     args = parser.parse_args()
+
+    embedding_provider = create_embedding_provider(
+        args.embed_provider,
+        model=args.embed_model,
+        dimension=args.embed_dim,
+        url=args.ollama_url,
+        timeout=args.ollama_timeout,
+        document_prefix=config.EMBED_DOC_PREFIX,
+        query_prefix=config.EMBED_QUERY_PREFIX,
+    )
 
     conn = sqlite3.connect(args.db)
 
@@ -115,8 +144,17 @@ def main():
     # Changing the embedding model invalidates every stored vector, so allow a
     # clean rebuild. Without this, the incremental skip below would keep old
     # vectors and mix them with ones from a different model.
+    vector_table_existed = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='vec_products'"
+    ).fetchone() is not None
     if args.reset:
         conn.execute("DROP TABLE IF EXISTS vec_products")
+        if conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (METADATA_TABLE,)
+        ).fetchone():
+            conn.execute(
+                f"DELETE FROM {METADATA_TABLE} WHERE index_name='vec_products'"
+            )
         conn.commit()
 
     # a vector table keyed by the product id from the `products` table
@@ -126,6 +164,33 @@ def main():
         USING vec0(product_id INTEGER PRIMARY KEY, embedding FLOAT[{args.embed_dim}])
         """
     )
+
+    stored_profile = read_index_metadata(conn)
+    if stored_profile is not None:
+        mismatches = profile_mismatches(
+            stored_profile, provider_profile(embedding_provider)
+        )
+        if mismatches:
+            conn.close()
+            parser.error(
+                "configured embedding profile does not match the existing index "
+                f"({', '.join(mismatches)} differ); rerun with --reset"
+            )
+
+    vector_count = conn.execute("SELECT COUNT(*) FROM vec_products").fetchone()[0]
+    if stored_profile is None and vector_table_existed and vector_count > 0 and not args.reset:
+        if not args.adopt_legacy_index:
+            conn.close()
+            parser.error(
+                "the existing vector index predates embedding metadata; use --reset "
+                "to rebuild it, or --adopt-legacy-index only if you know the current "
+                "provider, model, dimension, and prefixes created it"
+            )
+        write_index_metadata(conn, embedding_provider)
+        conn.commit()
+    elif args.reset or not vector_table_existed or vector_count == 0:
+        write_index_metadata(conn, embedding_provider)
+        conn.commit()
 
     # which products are already embedded? (so re-runs skip them)
     already_done = {
@@ -147,16 +212,11 @@ def main():
     embedded = 0
     for i, (pid, name, description, ingredients_list) in enumerate(todo, start=1):
         # Prefix with the model's document instruction (see config.EMBED_DOC_PREFIX).
-        text = config.EMBED_DOC_PREFIX + build_text(
+        text = build_text(
             name or "", description or "", ingredients_to_text(ingredients_list)
         )
         try:
-            vector = get_embedding(
-                text,
-                model=args.embed_model,
-                url=args.ollama_url,
-                timeout=args.ollama_timeout,
-            )
+            vector = embedding_provider.embed_documents([text])[0]
             conn.execute(
                 "INSERT INTO vec_products(product_id, embedding) VALUES (?, ?)",
                 (pid, serialize_float32(vector)),

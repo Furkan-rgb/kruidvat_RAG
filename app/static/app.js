@@ -21,6 +21,7 @@ const remediationByStatus = {
   database_missing: "Run python scraper.py to create the catalogue.",
   products_table_missing: "Run python scraper.py to initialize the products table.",
   vector_index_missing: "Run python embed.py to build the vector index.",
+  embedding_index_mismatch: "Run python embed.py --reset with the configured embedding provider.",
   sqlite_vec_unavailable: "Reinstall sqlite-vec and check SQLite extension support.",
   database_unavailable: "Check DB_PATH and database file permissions."
 };
@@ -50,6 +51,7 @@ async function checkHealth() {
       database_missing: "Database missing",
       products_table_missing: "Products missing",
       vector_index_missing: "Vector index missing",
+      embedding_index_mismatch: "Embedding index mismatch",
       sqlite_vec_unavailable: "Setup incomplete",
       database_unavailable: "Setup incomplete"
     };

@@ -40,57 +40,83 @@ class FakeConnection:
         pass
 
 
+class FakeEmbeddingProvider:
+    provider = "fake-embeddings"
+    model = "fake-embed-model"
+    dimension = 1
+    document_prefix = "document: "
+    query_prefix = "query: "
+
+    def embed_query(self, text):
+        self.query = text
+        return [1.0]
+
+    def embed_documents(self, texts):
+        return [[1.0] for _text in texts]
+
+
+class FakeAnswerProvider:
+    provider = "fake-answers"
+    model = "fake-answer-model"
+
+    def __init__(self, answer="answer", chunks=None):
+        self.answer = answer
+        self.chunks = chunks or [answer]
+        self.calls = []
+
+    def generate(self, system, prompt):
+        self.calls.append((system, prompt))
+        return self.answer
+
+    def stream(self, system, prompt):
+        self.calls.append((system, prompt))
+        yield from self.chunks
+
+
+def fake_rag(*, answer="answer", chunks=None):
+    answer_provider = FakeAnswerProvider(answer, chunks)
+    rag = service.RAGService(
+        embedding_provider=FakeEmbeddingProvider(),
+        answer_provider=answer_provider,
+    )
+    return rag, answer_provider
+
+
 @pytest.mark.parametrize("mode", ["advisor", "strict"])
 def test_ask_forwards_mode_and_top_k(monkeypatch, mode):
-    rag = service.RAGService()
+    rag, answer_provider = fake_rag()
     rows = [(0.1, 1, "Product", "https://x/p/1", None, '["Aqua"]')]
     captured = {}
     monkeypatch.setattr(rag, "_connect", lambda **_kwargs: FakeConnection())
-    monkeypatch.setattr(service, "get_embedding", lambda *_args, **_kwargs: [1.0])
 
     def fake_search(_conn, _vector, top_k):
         captured["top_k"] = top_k
         return rows
 
-    def fake_answer(question, context, **kwargs):
-        captured.update(question=question, context=context, **kwargs)
-        return "answer"
-
     monkeypatch.setattr(service, "search", fake_search)
-    monkeypatch.setattr(service, "generate_answer", fake_answer)
     result = rag.ask("  useful question  ", mode=mode, top_k=4)
     assert result.question == "useful question"
     assert result.mode == mode
-    assert captured["mode"] == mode
     assert captured["top_k"] == 4
+    assert answer_provider.calls[0][0] == service.SYSTEM_PROMPTS[mode]
+    assert "Question: useful question" in answer_provider.calls[0][1]
 
 
 def test_no_results_skips_answer_model(monkeypatch):
-    rag = service.RAGService()
+    rag, answer_provider = fake_rag()
     monkeypatch.setattr(rag, "_connect", lambda **_kwargs: FakeConnection())
-    monkeypatch.setattr(service, "get_embedding", lambda *_args, **_kwargs: [1.0])
     monkeypatch.setattr(service, "search", lambda *_args, **_kwargs: [])
-    monkeypatch.setattr(
-        service,
-        "generate_answer",
-        lambda *_args, **_kwargs: pytest.fail("answer model should not be called"),
-    )
     result = rag.ask("question")
     assert result.products == []
     assert "No matching products" in result.answer
+    assert answer_provider.calls == []
 
 
 def test_stream_ask_yields_progress_evidence_tokens_and_done(monkeypatch):
-    rag = service.RAGService()
+    rag, _answer_provider = fake_rag(chunks=["Hello ", "**world**"])
     rows = [(0.1, 1, "Product", "https://x/p/1", None, '["Aqua"]')]
     monkeypatch.setattr(rag, "_connect", lambda **_kwargs: FakeConnection())
-    monkeypatch.setattr(service, "get_embedding", lambda *_args, **_kwargs: [1.0])
     monkeypatch.setattr(service, "search", lambda *_args, **_kwargs: rows)
-    monkeypatch.setattr(
-        service,
-        "_stream_answer_ollama",
-        lambda *_args, **_kwargs: iter(["Hello ", "**world**"]),
-    )
     events = list(rag.stream_ask("question", mode="strict", top_k=3))
     assert [event["stage"] for event in events if event["type"] == "status"] == [
         "embedding",
@@ -105,18 +131,13 @@ def test_stream_ask_yields_progress_evidence_tokens_and_done(monkeypatch):
 
 
 def test_stream_no_results_finishes_without_answer_model(monkeypatch):
-    rag = service.RAGService()
+    rag, answer_provider = fake_rag()
     monkeypatch.setattr(rag, "_connect", lambda **_kwargs: FakeConnection())
-    monkeypatch.setattr(service, "get_embedding", lambda *_args, **_kwargs: [1.0])
     monkeypatch.setattr(service, "search", lambda *_args, **_kwargs: [])
-    monkeypatch.setattr(
-        service,
-        "_stream_answer_ollama",
-        lambda *_args, **_kwargs: pytest.fail("answer model should not be called"),
-    )
     events = list(rag.stream_ask("question"))
     assert any(event["type"] == "evidence" and event["products"] == [] for event in events)
     assert events[-1]["type"] == "done"
+    assert answer_provider.calls == []
 
 
 def test_missing_database_does_not_create_it(tmp_path):
@@ -170,6 +191,22 @@ def test_ollama_connection_and_model_errors_are_translated():
         urllib_error.HTTPError("http://x", 404, "not found", {}, None), "missing-model"
     )
     assert missing.code == "ollama_model_missing"
+
+
+def test_provider_error_is_translated_without_provider_specific_service_logic(monkeypatch):
+    class FailingEmbeddingProvider(FakeEmbeddingProvider):
+        def embed_query(self, _text):
+            raise service.ProviderError("cloud_timeout", "Too slow.", "Try again.")
+
+    rag = service.RAGService(
+        embedding_provider=FailingEmbeddingProvider(),
+        answer_provider=FakeAnswerProvider(),
+    )
+    monkeypatch.setattr(rag, "_connect", lambda **_kwargs: FakeConnection())
+    with pytest.raises(service.ServiceError) as caught:
+        rag.retrieve("question")
+    assert caught.value.code == "cloud_timeout"
+    assert caught.value.remediation == "Try again."
 
 
 def test_get_product_returns_parsed_record(tmp_path):

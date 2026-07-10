@@ -79,11 +79,12 @@ Notice three things: it states outright that porosity and curl type are not in t
 - **Structured data, straight from the source**: rather than parsing fragile HTML or running an LLM over each page, it reads clean product records (name, description, INCI ingredients) from Kruidvat's SAP Commerce (OCC) API, which is fast and reliable, with no per-page extraction step.
 - **Gets past the bot wall once**: the catalogue is a JS-rendered SPA behind Akamai bot protection and a OneTrust consent gate. A stealthed Chromium ([`playwright-stealth`](https://pypi.org/project/playwright-stealth/), Chrome's new headless mode, an nl-NL / Europe-Amsterdam profile) clears both once; the API calls then run from inside that browser context and inherit its cookies (a plain server-side request gets a `403`).
 - **Captures descriptions, not just ingredients**: each product's use-case/marketing description is saved alongside its INCI list, so questions like *"best shampoo for dry, damaged hair"* work, not only exact-ingredient lookups.
-- **Multilingual semantic embeddings**: a second pass embeds each product locally with [`embeddinggemma`](https://ollama.com/library/embeddinggemma) (Google's multilingual embedding model, a good fit for the Dutch descriptions + Latin INCI names) and stores the vectors in the same SQLite file via [sqlite-vec](https://github.com/asg017/sqlite-vec), making the catalogue searchable by meaning.
+- **Multilingual semantic embeddings**: by default, a second pass embeds each product locally with [`embeddinggemma`](https://ollama.com/library/embeddinggemma) (Google's multilingual embedding model, a good fit for the Dutch descriptions + Latin INCI names) and stores the vectors in the same SQLite file via [sqlite-vec](https://github.com/asg017/sqlite-vec), making the catalogue searchable by meaning.
 - **Web and CLI, one shared pipeline**: FastAPI and `query.py` call the same service. Both embed the complete question, retrieve the closest products once, and feed those descriptions and ingredients to the configured local answer model.
 - **Grounded Q&A, with an advisor mode**: by default it answers as an *advisor*, combining real product facts with general haircare knowledge to make a recommendation (and staying clear about which is which); strict mode keeps it inside the retrieved data for exact ingredient lookups.
 - **One place to configure**: `config.py` holds the shared defaults (database path, model names, prompt prefixes, Ollama host, and the list of categories to scrape); every script accepts CLI flags that override them per run.
-- **Pluggable answer model**: embedding and retrieval are always local, while the model that writes the final answer is selected by `ANSWER_PROVIDER` (local `ollama` today), so a more capable local model or a remote API can be swapped in later without touching retrieval.
+- **Provider-independent model boundary**: indexing, query embedding, complete answers, and streamed answers use small provider interfaces. Ollama is the only adapter today, while future local or cloud adapters can be added without changing retrieval, prompts, the CLI, or API.
+- **Embedding-index safety**: new and rebuilt indexes record their provider, model, dimension, and prompt prefixes. Querying fails clearly if that profile does not match the configured embedding adapter instead of silently returning meaningless neighbours.
 - **Idempotent + incremental**: SQLite (WAL mode) with batched inserts, URL de-duplication, and skip-already-scraped logic so runs can be resumed. Embedding is incremental too, so re-runs only process new products.
 
 ## Architecture
@@ -97,6 +98,8 @@ The three commands and `config.py` live at the repo root. FastAPI, the shared RA
 | `embed.py` | Command: embed products into a `sqlite-vec` vector table |
 | `query.py` | Backwards-compatible CLI using the shared RAG service |
 | `app/service.py` | Shared validation, embedding, KNN retrieval, context, answering, health, and product lookup |
+| `app/providers/` | Provider-neutral contracts, factories, and the Ollama embedding/answer adapters |
+| `app/index_metadata.py` | Stored embedding-profile identity and compatibility checks |
 | `app/main.py` | FastAPI routes and static frontend serving |
 | `app/static/` | Responsive HTML, CSS, and vanilla JavaScript interface |
 | `lib/api.py` | Kruidvat OCC API client: consent/bot-check, paginated product list, product detail |
@@ -114,9 +117,9 @@ FastAPI / query.py
       ↓
 shared RAG service
       ↓
-complete question → question embedding → sqlite-vec nearest-neighbour retrieval
+complete question → embedding provider → sqlite-vec nearest-neighbour retrieval
       ↓
-grounded context → local Ollama answer model
+grounded context → answer provider (complete or streamed)
       ↓
 answer + structured retrieved-product evidence
 ```
@@ -148,7 +151,9 @@ Shared defaults live in `config.py`: the database path, model names, the Ollama 
 A few things worth knowing:
 
 - **Embedding prompt prefixes.** EmbeddingGemma embeds documents and queries with different task instructions, kept in `config.py` as `EMBED_DOC_PREFIX` / `EMBED_QUERY_PREFIX`. If you switch to a model with other conventions (e.g. `bge-m3` needs none), update or empty them there.
-- **Pluggable answer model.** The model that writes the final answer is selected by `ANSWER_PROVIDER`, which is `ollama` (local) for now. Embedding and retrieval are always local; another provider could be added in the shared service without changing retrieval.
+- **Separate providers.** `EMBED_PROVIDER` selects the adapter used by both `embed.py` and question retrieval; `ANSWER_PROVIDER` selects the adapter that writes complete and streamed answers. Both are `ollama` today. Provider-specific HTTP payloads, streaming, and errors live under `app/providers/`, not in the RAG service.
+- **Embedding profiles are index-wide.** A question must use the same embedding provider, model, dimension, document prefix, and query prefix as the stored product vectors. Changing any of those requires `python embed.py --reset`. An answer provider can be changed independently because it receives text rather than vectors.
+- **Legacy indexes.** A vector index created before profile metadata was introduced remains readable for compatibility. Rebuild it once with `python embed.py --reset` to record and enforce its identity.
 - **Answer-model capacity affects grounding.** The advisor reasons over all `TOP_K` retrieved products in a single prompt, so it has to keep each product's ingredient list separate. In testing, `gemma4:e4b-mlx` (about 4b effective parameters) still produced cross-attribution mistakes at `TOP_K = 10` even with the grounding fixes in the prompt and context, crediting one product with an ingredient that actually belonged to another. Switching the answer model to `gemma4:12b-mlx` removed those in our checks. If you stay on a smaller model, lowering `TOP_K` (fewer products to track at once) is the cheaper lever. This only concerns ingredient grounding: any model can still get a "what does this ingredient do" judgement wrong, which is a separate problem from attribution.
 
 ## Usage
@@ -199,11 +204,13 @@ This reads products that have ingredients, embeds `name + description + ingredie
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--db` | `config.DB_PATH` (`kruidvat.db`) | SQLite database written by `scraper.py` |
-| `--embed-model` | `config.EMBED_MODEL` (`embeddinggemma`) | Local Ollama embedding model |
+| `--embed-provider` | `config.EMBED_PROVIDER` (`ollama`) | Adapter used to create document embeddings |
+| `--embed-model` | `config.EMBED_MODEL` (`embeddinggemma`) | Embedding model used by the selected adapter |
 | `--embed-dim` | `config.EMBED_DIM` (`768`) | Embedding size (must match the model's output) |
 | `--ollama-url` | `config.EMBEDDINGS_URL` | Ollama embeddings endpoint |
 | `--ollama-timeout` | `120` | Embedding request timeout (seconds) |
-| `--reset` | off | Drop and rebuild the vector table first (use when changing the embedding model) |
+| `--reset` | off | Drop and rebuild the vector table first (use when changing the embedding profile) |
+| `--adopt-legacy-index` | off | Record the configured profile on an old metadata-less index without rebuilding; only use when certain it matches |
 
 ### 3. Ask questions (RAG)
 
@@ -230,7 +237,9 @@ The two answer modes serve different questions. **Advisor** (the default) is for
 | `--top-k N` | `config.TOP_K` (`10`) | Number of products to retrieve |
 | `--provider` | `config.ANSWER_PROVIDER` (`ollama`) | Backend that writes the answer (local for now) |
 | `--answer-model` | `config.ANSWER_MODEL` (`gemma4:12b-mlx`) | Local Ollama model used to write the answer |
+| `--embed-provider` | `config.EMBED_PROVIDER` (`ollama`) | Backend that embeds the question |
 | `--embed-model` | `config.EMBED_MODEL` (`embeddinggemma`) | Embedding model (must match `embed.py`) |
+| `--embed-dim` | `config.EMBED_DIM` (`768`) | Embedding size (must match the stored index) |
 | `--ollama-timeout` | `120` | Request timeout (seconds) |
 
 ### 4. Run the web application
@@ -277,13 +286,15 @@ The integration test skips automatically if the `sqlite-vec` extension can't loa
 | Answer model is missing | Run `ollama pull <config.ANSWER_MODEL>`. |
 | Requests time out | Confirm Ollama is responsive, use a smaller local model if appropriate, or increase `OLLAMA_TIMEOUT`. |
 | Embedding model changed | Update its prefix and dimension as needed, then run `python embed.py --reset`. Never mix vectors from different models. |
+| Embedding index mismatch | The configured provider profile differs from the stored index. Run `python embed.py --reset` using the intended embedding configuration. |
+| Existing index predates metadata | Prefer `python embed.py --reset`. If you know exactly which provider, model, dimension, and prefixes created it, run once with `--adopt-legacy-index`. |
 
 ## Known limitations
 
 - Semantic nearest-neighbour retrieval is not exhaustive filtering. Exact constraints such as “all sulfate-free products” can miss relevant catalogue entries outside the retrieved top-k.
 - Advisor mode applies the answer model's general cosmetics knowledge; that reasoning can be wrong even when product ingredients are correctly grounded. Strict mode stays within retrieved catalogue facts.
 - Product formulations and catalogue descriptions can change. Follow the source link and packaging for decisions involving allergies or medical concerns.
-- The application is local-first and currently implements Ollama as its only answer provider.
+- The provider boundary is ready for additional adapters, but Ollama is currently the only implemented embedding and answer backend.
 
 ## Data model
 
@@ -298,14 +309,25 @@ products(
 )
 ```
 
-`embed.py` adds a companion virtual table in the same file:
+`embed.py` adds a companion virtual table and embedding-profile metadata in the same file:
 
 ```sql
 vec_products USING vec0(
   product_id  INTEGER PRIMARY KEY,  -- references products.id
   embedding   FLOAT[768]            -- embeddinggemma vector (768-dim)
 )
+
+embedding_index_metadata(
+  index_name, provider, model, dimension,
+  document_prefix, query_prefix, updated_at
+)
 ```
+
+## Adding another model provider
+
+Implement `EmbeddingProvider`, `AnswerProvider`, or both from `app/providers/base.py`, then register the adapter in `app/providers/factory.py`. Embedding adapters own document/query prefixing and dimension validation. Answer adapters own provider payloads and expose both `generate()` and `stream()`. They translate transport and model failures into `ProviderError`; the shared service converts that into the existing safe API error contract.
+
+Provider selection should remain server-controlled. A future frontend choice should send an allow-listed profile such as `local`, `fast`, or `quality`, rather than accepting arbitrary endpoints, model names, or API keys from a browser. Cloud credentials should be read from deployment environment variables by their adapter and never returned by the API.
 
 ## Where this is headed
 
@@ -320,7 +342,7 @@ The answer step already works as an advisor: it grounds product facts in the cat
 - **Hybrid keyword + vector search.** Semantic search is great for use-case questions ("good for dry hair") but vague for exact-ingredient ones ("everything without SLS", "which contain Limonene"). A SQL `LIKE` / keyword pre-filter on `ingredients_list`, combined with the vector results, would make ingredient-exact questions exhaustive. No new dependency, just plain SQLite.
 - **Test and compare different embedding models.** `embeddinggemma` is the current default: multilingual and a 768-dim drop-in. Worth benchmarking on real queries against `bge-m3` (1024-dim; strong multilingual, needs `EMBED_DIM = 1024` + a `--reset` re-embed), `qwen3-embedding:0.6b`, and `nomic-embed-text` (English baseline). Remember the per-model prompt prefixes and re-embed with `--reset` when switching.
 - **Set up an evaluation harness** so the comparison above is repeatable rather than eyeballed.
-- **Add a remote answer provider** (e.g. Anthropic / OpenAI) as a branch in the shared RAG service, selected via `ANSWER_PROVIDER`, with the API key read from the environment. Embedding and retrieval stay local.
+- **Add cloud adapters** (for example OpenAI or Anthropic answers, and an optional cloud embedding backend) through `app/providers/`, with credentials read from environment variables. A new embedding backend requires a reset/re-index; an answer backend can be switched independently.
 - **Capture more product attributes.** The OCC product API also exposes hair-type and other classification fields; saving those could sharpen use-case queries further (note: hair *porosity* is not in the data).
 
 ## Notes

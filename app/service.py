@@ -7,19 +7,28 @@ original one-embedding -> one-KNN-search -> one-answer-call design.
 from __future__ import annotations
 
 import json
-import socket
 import sqlite3
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
-from urllib import error as urllib_error
-from urllib import request as urllib_request
 
 import sqlite_vec
 from sqlite_vec import serialize_float32
 
 import config
+from app.index_metadata import profile_mismatches, provider_profile, read_index_metadata
+from app.providers import (
+    AnswerProvider,
+    EmbeddingProvider,
+    OllamaAnswerProvider,
+    OllamaEmbeddingProvider,
+    ProviderError,
+    create_answer_provider,
+    create_embedding_provider,
+)
+from app.providers.ollama import post_json as _provider_post_json
+from app.providers.ollama import translate_error as _provider_translate_ollama_error
 
 MAX_TOP_K = 25
 VALID_MODES = {"advisor", "strict"}
@@ -133,21 +142,19 @@ class QueryResult:
 
 def _post_json(url, payload, timeout):
     """POST a JSON payload to a local Ollama endpoint and return the parsed body."""
-    req = urllib_request.Request(
-        url,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    with urllib_request.urlopen(req, timeout=timeout) as resp:
-        body = resp.read().decode("utf-8", errors="ignore")
-    return json.loads(body)
+    return _provider_post_json(url, payload, timeout)
 
 
 def get_embedding(text, *, model, url, timeout, _post=None):
     """Embed `text` with the local Ollama embedding model."""
-    post = _post or _post_json
-    return post(url, {"model": model, "prompt": text}, timeout)["embedding"]
+    adapter = OllamaEmbeddingProvider(
+        model=model,
+        dimension=0,
+        url=url,
+        timeout=timeout,
+        _post=_post or _post_json,
+    )
+    return adapter.embed_query(text)
 
 
 def ingredients_to_text(ingredients_list):
@@ -203,44 +210,16 @@ def build_context(rows):
 
 
 def _answer_ollama(prompt, *, model, url, timeout, system, _post=None):
-    payload = {
-        "model": model,
-        "stream": False,
-        "think": False,
-        "system": system,
-        "options": {"temperature": 0},
-        "prompt": prompt,
-    }
-    post = _post or _post_json
-    return post(url, payload, timeout).get("response", "").strip()
+    return OllamaAnswerProvider(
+        model=model, url=url, timeout=timeout, _post=_post or _post_json
+    ).generate(system, prompt)
 
 
 def _stream_answer_ollama(prompt, *, model, url, timeout, system):
     """Yield answer text chunks from Ollama's newline-delimited JSON stream."""
-    payload = {
-        "model": model,
-        "stream": True,
-        "think": False,
-        "system": system,
-        "options": {"temperature": 0},
-        "prompt": prompt,
-    }
-    req = urllib_request.Request(
-        url,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-        method="POST",
+    yield from OllamaAnswerProvider(model=model, url=url, timeout=timeout).stream(
+        system, prompt
     )
-    with urllib_request.urlopen(req, timeout=timeout) as resp:
-        for raw_line in resp:
-            if not raw_line.strip():
-                continue
-            body = json.loads(raw_line.decode("utf-8", errors="ignore"))
-            if body.get("error"):
-                raise RuntimeError(str(body["error"]))
-            chunk = body.get("response", "")
-            if chunk:
-                yield chunk
 
 
 def build_answer_prompt(question: str, context: str, mode: str) -> tuple[str, str]:
@@ -259,14 +238,15 @@ def generate_answer(
 ):
     """Write the final answer using the original mode-specific prompts."""
     system, prompt = build_answer_prompt(question, context, mode)
-    if provider == "ollama":
-        return _answer_ollama(
-            prompt, model=model, url=url, timeout=timeout, system=system, _post=_post
+    if provider == "ollama" and _post is not None:
+        adapter: AnswerProvider = OllamaAnswerProvider(
+            model=model, url=url, timeout=timeout, _post=_post
         )
-    raise ValueError(
-        f"Unknown answer provider {provider!r}. Implemented: 'ollama'. "
-        "Add a branch in generate_answer() to support a remote model."
-    )
+    else:
+        adapter = create_answer_provider(
+            provider, model=model, url=url, timeout=timeout
+        )
+    return adapter.generate(system, prompt)
 
 
 def rows_to_products(rows) -> list[ProductResult]:
@@ -291,44 +271,14 @@ def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
 
 
 def _translate_ollama_error(exc: Exception, model: str) -> ServiceError:
-    if isinstance(exc, urllib_error.HTTPError):
-        body = ""
-        try:
-            body = exc.read().decode("utf-8", errors="ignore")
-        except Exception:
-            pass
-        if exc.code == 404 or "not found" in body.lower():
-            return ServiceError(
-                "ollama_model_missing",
-                f"The configured Ollama model {model!r} is not available.",
-                f"Run `ollama pull {model}` and try again.",
-            )
-    message = str(exc).lower()
-    if "model" in message and "not found" in message:
-        return ServiceError(
-            "ollama_model_missing",
-            f"The configured Ollama model {model!r} is not available.",
-            f"Run `ollama pull {model}` and try again.",
-        )
-    if isinstance(exc, (TimeoutError, socket.timeout)):
-        return ServiceError(
-            "ollama_timeout",
-            "Ollama did not respond before the request timed out.",
-            "Check that Ollama is responsive, or increase OLLAMA_TIMEOUT in config.py.",
-        )
-    if isinstance(exc, urllib_error.URLError):
-        reason = exc.reason
-        if isinstance(reason, (TimeoutError, socket.timeout)):
-            return ServiceError(
-                "ollama_timeout",
-                "Ollama did not respond before the request timed out.",
-                "Check that Ollama is responsive, or increase OLLAMA_TIMEOUT in config.py.",
-            )
+    provider_error = _provider_translate_ollama_error(exc, model)
     return ServiceError(
-        "ollama_unavailable",
-        "The configured Ollama service is unavailable.",
-        "Start Ollama and confirm the configured host in config.py is reachable.",
+        provider_error.code, provider_error.message, provider_error.remediation
     )
+
+
+def _translate_provider_error(exc: ProviderError) -> ServiceError:
+    return ServiceError(exc.code, exc.message, exc.remediation)
 
 
 class RAGService:
@@ -339,19 +289,42 @@ class RAGService:
         *,
         db_path: str = config.DB_PATH,
         embed_model: str = config.EMBED_MODEL,
+        embed_dim: int = config.EMBED_DIM,
         answer_model: str = config.ANSWER_MODEL,
         provider: str = config.ANSWER_PROVIDER,
+        embed_provider: str = config.EMBED_PROVIDER,
         embed_url: str = config.EMBEDDINGS_URL,
         generate_url: str = config.GENERATE_URL,
         timeout: float = config.OLLAMA_TIMEOUT,
+        embedding_provider: EmbeddingProvider | None = None,
+        answer_provider: AnswerProvider | None = None,
     ):
         self.db_path = db_path
         self.embed_model = embed_model
         self.answer_model = answer_model
         self.provider = provider
+        self.embed_provider = embed_provider
         self.embed_url = embed_url
         self.generate_url = generate_url
         self.timeout = timeout
+        self.embedding_provider = embedding_provider or create_embedding_provider(
+            embed_provider,
+            model=embed_model,
+            dimension=embed_dim,
+            url=embed_url,
+            timeout=timeout,
+            document_prefix=config.EMBED_DOC_PREFIX,
+            query_prefix=config.EMBED_QUERY_PREFIX,
+        )
+        self.answer_provider = answer_provider or create_answer_provider(
+            provider, model=answer_model, url=generate_url, timeout=timeout
+        )
+
+        # Provider objects are authoritative when explicitly injected.
+        self.embed_model = self.embedding_provider.model
+        self.answer_model = self.answer_provider.model
+        self.embed_provider = self.embedding_provider.provider
+        self.provider = self.answer_provider.provider
 
     @property
     def models(self) -> dict[str, str]:
@@ -359,6 +332,7 @@ class RAGService:
             "embedding": self.embed_model,
             "answer": self.answer_model,
             "provider": self.provider,
+            "embedding_provider": self.embed_provider,
         }
 
     def _connect(self, *, require_vector: bool) -> sqlite3.Connection:
@@ -403,6 +377,19 @@ class RAGService:
                 "The sqlite-vec extension could not be loaded.",
                 "Reinstall sqlite-vec and use a Python build that permits SQLite extensions.",
             ) from exc
+        stored_profile = read_index_metadata(conn)
+        if stored_profile is not None:
+            mismatches = profile_mismatches(
+                stored_profile, provider_profile(self.embedding_provider)
+            )
+            if mismatches:
+                conn.close()
+                raise ServiceError(
+                    "embedding_index_mismatch",
+                    "The configured embedding provider does not match the stored vector index "
+                    f"({', '.join(mismatches)} differ).",
+                    "Run `python embed.py --reset` with the configured embedding provider.",
+                )
         return conn
 
     @staticmethod
@@ -418,14 +405,9 @@ class RAGService:
 
     def _embed_question(self, question: str):
         try:
-            return get_embedding(
-                config.EMBED_QUERY_PREFIX + question,
-                model=self.embed_model,
-                url=self.embed_url,
-                timeout=self.timeout,
-            )
-        except Exception as exc:
-            raise _translate_ollama_error(exc, self.embed_model) from exc
+            return self.embedding_provider.embed_query(question)
+        except ProviderError as exc:
+            raise _translate_provider_error(exc) from exc
 
     @staticmethod
     def _search_rows(conn: sqlite3.Connection, query_vector, top_k: int):
@@ -456,19 +438,12 @@ class RAGService:
             answer = "No matching products were retrieved. Run the embedding step if the catalogue should contain products."
         else:
             try:
-                answer = generate_answer(
-                    question,
-                    build_context(rows),
-                    provider=self.provider,
-                    model=self.answer_model,
-                    url=self.generate_url,
-                    timeout=self.timeout,
-                    mode=mode,
-                )
+                system, prompt = build_answer_prompt(question, build_context(rows), mode)
+                answer = self.answer_provider.generate(system, prompt)
             except ServiceError:
                 raise
-            except Exception as exc:
-                raise _translate_ollama_error(exc, self.answer_model) from exc
+            except ProviderError as exc:
+                raise _translate_provider_error(exc) from exc
         return QueryResult(
             question=question,
             mode=mode,
@@ -531,27 +506,14 @@ class RAGService:
             "stage": "generating",
             "message": "Generating a grounded answer from the retrieved evidence...",
         }
-        if self.provider != "ollama":
-            raise ServiceError(
-                "answer_provider_unavailable",
-                f"Streaming is not implemented for answer provider {self.provider!r}.",
-                "Use the configured Ollama provider or the non-streaming endpoint.",
-            )
-
         system, prompt = build_answer_prompt(question, build_context(rows), mode)
         chunks: list[str] = []
         try:
-            for chunk in _stream_answer_ollama(
-                prompt,
-                model=self.answer_model,
-                url=self.generate_url,
-                timeout=self.timeout,
-                system=system,
-            ):
+            for chunk in self.answer_provider.stream(system, prompt):
                 chunks.append(chunk)
                 yield {"type": "token", "text": chunk}
-        except Exception as exc:
-            raise _translate_ollama_error(exc, self.answer_model) from exc
+        except ProviderError as exc:
+            raise _translate_provider_error(exc) from exc
 
         yield {
             "type": "done",
@@ -616,6 +578,12 @@ class RAGService:
                 ).fetchone()[0]
             except Exception:
                 result["status"] = "sqlite_vec_unavailable"
+                return result
+            stored_profile = read_index_metadata(conn)
+            if stored_profile is not None and profile_mismatches(
+                stored_profile, provider_profile(self.embedding_provider)
+            ):
+                result["status"] = "embedding_index_mismatch"
                 return result
             result["status"] = "ready"
             return result

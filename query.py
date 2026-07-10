@@ -85,9 +85,20 @@ def main():
         help="Backend that writes the answer (currently: ollama)",
     )
     parser.add_argument(
+        "--embed-provider",
+        default=config.EMBED_PROVIDER,
+        help="Backend that embeds the question (currently: ollama)",
+    )
+    parser.add_argument(
         "--embed-model",
         default=config.EMBED_MODEL,
         help="Embedding model (must match embed.py)",
+    )
+    parser.add_argument(
+        "--embed-dim",
+        type=int,
+        default=config.EMBED_DIM,
+        help="Embedding size (must match the stored index)",
     )
     parser.add_argument(
         "--answer-model", default=config.ANSWER_MODEL, help="Model used to write the answer"
@@ -100,8 +111,10 @@ def main():
     service = RAGService(
         db_path=args.db,
         embed_model=args.embed_model,
+        embed_dim=args.embed_dim,
         answer_model=args.answer_model,
         provider=args.provider,
+        embed_provider=args.embed_provider,
         embed_url=args.embed_url,
         generate_url=args.generate_url,
         timeout=args.ollama_timeout,

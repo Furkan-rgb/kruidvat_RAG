@@ -20,6 +20,7 @@ OLLAMA_TIMEOUT = 120.0  # seconds, per request
 # MLX engine and is Apple-Silicon only; on other platforms use the portable
 # GGUF tag instead (e.g. "gemma4:e4b").
 EMBED_MODEL = "embeddinggemma"  # semantic embeddings (embed.py / query.py)
+EMBED_PROVIDER = "ollama"  # implemented adapter: "ollama"
 EMBED_DIM = 768  # must match EMBED_MODEL's output size
 
 # EmbeddingGemma embeds documents and queries with different task instructions.
@@ -30,9 +31,8 @@ EMBED_DOC_PREFIX = "title: none | text: "  # product text (embed.py)
 EMBED_QUERY_PREFIX = "task: search result | query: "  # the question (query.py)
 
 # Answer step: the "main model" that writes the final grounded answer (query.py).
-# Embedding and retrieval are always local; only this step's backend is
-# pluggable. A remote provider can be added later as another branch in
-# query.py's generate_answer() without touching anything else.
+# Provider adapters live in app/providers. Ollama is the only adapter today;
+# future local or cloud implementations can satisfy the same interfaces.
 ANSWER_PROVIDER = "ollama"  # implemented: "ollama" (local Ollama)
 ANSWER_MODEL = "gemma4:12b-mlx"  # for ollama, any local chat model
 

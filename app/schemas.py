@@ -18,6 +18,7 @@ class ModelInfo(BaseModel):
     embedding: str
     answer: str
     provider: str
+    embedding_provider: str | None = None
 
 
 class ProductResultResponse(BaseModel):
@@ -57,4 +58,3 @@ class HealthResponse(BaseModel):
     vec_products_table_exists: bool
     embedded_product_count: int | None
     models: ModelInfo
-
